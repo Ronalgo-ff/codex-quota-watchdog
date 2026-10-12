@@ -519,7 +519,15 @@ function Invoke-WatchRound {
     $a=$active[0]
     # An incomplete quota snapshot is not a zero balance.
     if($null -eq $a.FiveHour -or $null -eq $a.Weekly -or $a.UsageError){throw '当前账号额度数据未知'}
+    # Reconcile before reading the desktop, which may still be closed.
+    $restartIntent=Get-StateFlag $State 'switchIntent'
+    if($restartIntent -and $restartIntent.targetId -eq $a.Id){Set-CodexDesktopRecovery $State $restartIntent}
+    if(-not(Test-CodexDesktopRecovery $State $a.Id)){return}
     $snapshot=Get-DesktopSnapshot
+    if(Get-StateFlag $State 'desktopRestart'){
+        Clear-StateFlag $State 'desktopRestart';Save-State $State
+        Write-Event 'Codex 桌面已重新打开，聊天读取通道恢复正常' 'OK'
+    }
     $recent=@($snapshot.Recent)
     # Fresh recent-task reads come first; reuse them for pending deliveries.
     # Reconcile uncertain submissions before any account mutation or new send.
@@ -585,8 +593,11 @@ function Invoke-WatchRound {
         if($best){
             if(-not $Live){Write-Transition 'dry-switch' "[演习] 会切换到 $($best.Email)，周剩余 $($best.Weekly)%" 'DRYRUN';return}
             $intent=[pscustomobject]@{id=[guid]::NewGuid().ToString('N');sourceId=$a.Id;targetId=$best.Id;at=(Get-Date).ToString('o');incidents=@($freshHits|ForEach-Object {$_.Id+':'+$_.TurnId})}
+            $desktopLaunch=Get-CodexDesktopLaunch
+            if($desktopLaunch){Set-StateFlag $intent 'desktopLaunch' $desktopLaunch}
             Set-StateFlag $State 'switchIntent' $intent;Save-State $State
             if(-not (Invoke-SwitchAccount $best)){Request-ManualPause $State ('switch:'+ $intent.id) '切号结果未确认，已暂停' $intent;return}
+            Set-CodexDesktopRecovery $State $intent
             foreach($key in $intent.incidents){$State.switchIncidents|Add-Member -NotePropertyName $key -NotePropertyValue $best.Id -Force}
             Clear-StateFlag $State 'switchIntent';Save-State $State
             Set-StateFlag $State 'desktopReadyAfter' ((Get-Date).AddSeconds([int]$Script:Config.DesktopReadyDelaySec).ToString('o'));Save-State $State

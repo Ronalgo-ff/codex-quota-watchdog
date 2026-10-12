@@ -22,6 +22,7 @@ function Get-Accounts{
 }
 function Invoke-Csw($Command,$Arguments){if($Command -ne 'switch_account_and_restart_chatgpt'){throw 'Unexpected mutation'};$script:nativeSwitches++}
 function Get-RecentSessions{return @()}
+function Get-CodexDesktopLaunch {return $null} # Isolate desktop restart from real apps.
 $script:mode='accept';$script:turn='source';$script:status='idle';$script:outcome='limit'
 function Get-TurnView($ThreadId){
     $script:reads++

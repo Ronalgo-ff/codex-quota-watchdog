@@ -9,9 +9,10 @@ function Check($Name, $Ok) {
 $start = Get-Content (Join-Path $root 'start.cmd') -Raw
 $console = Get-Content (Join-Path $root 'start-console.cmd') -Raw
 $vbs = Get-Content (Join-Path $root 'start-tray.vbs') -Raw
+$launch = Get-Content (Join-Path $root 'launch.ps1') -Raw
 $trayText = Get-Content (Join-Path $root 'tray.ps1') -Raw -Encoding UTF8
 $monitorText = Get-Content (Join-Path $root 'monitor.ps1') -Raw -Encoding UTF8
-Check 'default launcher uses hidden tray entry' ($start -match 'wscript.exe' -and $vbs -match '-WindowStyle Hidden' -and $vbs -match 'tray.ps1')
+Check 'default launcher validates machine then uses hidden tray entry' ($start -match 'wscript.exe' -and $vbs -match '-WindowStyle Hidden' -and $vbs -match 'launch.ps1' -and $launch -match 'setup.ps1' -and $launch -match 'tray.ps1')
 Check 'original console menu remains available' ($console -match 'start-menu.ps1')
 Check 'double click opens or restores terminal monitor' ($trayText -match '\$tray\.add_DoubleClick\(\{ Show-Monitor \}\)')
 Check 'watcher is launched as independent hidden process' ($trayText -match 'Start-Process[\s\S]+-WindowStyle Hidden -PassThru')

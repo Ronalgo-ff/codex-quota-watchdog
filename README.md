@@ -1,12 +1,18 @@
-﻿# Codex 额度看护
+# Codex 额度看护
 
-Windows 本地看护，程序目录为 `D:\app date\codex project\codex看护软件`，桌面入口为“Codex 额度看护”。2026-10-10 从 C 盘迁移到此目录。已移除 AI helper 启动脚本、调用链和配置读取，不再启动 Claude Code、DeepSeek 或其他 AI 诊断进程。历史报告、日志和备份保留供人工复核，不再执行。
+Windows 本地看护，自动读取 Codex Switch 账号额度，按规则切号并恢复中断的 Codex 桌面聊天。双击 `start.cmd` 或桌面“Codex 额度看护”即可打开菜单。无法处理的异常会保存报告并暂停。
 
 ## 从仓库使用
 
-这是基于 PowerShell 的 Windows 本地工具，需要本机已安装并运行 Codex 桌面与 Codex Switch。双击 `start.cmd` 或桌面“Codex 额度看护”打开统一窗口。看护与额度定时已合并，关闭窗口后留在托盘；`start-console.cmd` 保留为控制台备用入口。
+这是基于 PowerShell 的 Windows 本地工具，需要 Windows PowerShell 5.1 或 PowerShell 7，以及已运行的 Codex 桌面与 Codex Switch；不需要 Node、npm、Python 或额外 AI CLI。Switch 使用官方登录即可，在“设置 → 网络与同步”启用“网页版监听端口”（默认 18080，建议仅限本机）。这项设置与顶部的模型代理开关相互独立。
 
-`rules.json` 保存可编辑规则。迁移到其他电脑时，请检查其中的 `DesktopCallerThreadId`（本机 Codex 聊天 ID）和 `ExpectedAccounts`。新定时执行器 `scheduler.ps1` 已包含在项目内，`state/scheduler/config.json` 保存端口、执行时间和启用状态；不依赖旧的“开始额度定时”软件。新电脑的 Windows 定时任务需在“额度定时”页保存并启用。
+首次启动会自动检查接口、发现本机 Codex 会话目录、记录账号数量并验证桌面聊天通道，生成被 Git 忽略的 `rules.local.json`。日常规则在 `rules.json`，本机配置优先。只检查环境可运行 `powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -CheckOnly`；创建桌面快捷方式可运行同一命令去掉 `-CheckOnly`。账号数量改变后，确认是有意添加/删除，再运行 `setup.ps1 -RefreshAccounts` 更新基准。
+
+双击 `start.cmd` 打开统一图形窗口（看护、额度定时两个页面），关闭窗口后留在托盘；`start-console.cmd` 保留控制台备用入口。首次使用可先选演习模式。启动失败会显示具体原因，记录在 `logs/startup.log`。PowerShell 7 请求本地接口时显式绕过环境代理，保留其他程序的代理设置。
+
+托盘通过 Windows 按需任务独立启动，避免 Codex 重启时清理它所启动的子进程。该任务没有每日或开机触发器，仍由双击入口启动。看护、界面和切号后的补启动进程均由独立宿主管理。
+
+切号前保存正在使用的 Codex 桌面路径和启动参数。切号后同时核实桌面进程及聊天通道；若桌面没有回来，等待 15 秒后按原启动方式补启动一次。补启动意图落盘，重启不重复执行；90 秒仍没有桌面进程则保存报告并暂停。已有桌面或未发生自动切号时不会补启动。
 
 仓库包含当前源码、规则、使用说明和自动测试。`state/`、`logs/`、`backups/`、`patches/` 以及旧压缩包和 `.bak-*` 文件通过 `.gitignore` 排除，仍保留在本机。运行状态不随 Git 同步；迁移正在使用的程序时，应单独保留 `state/` 中的去重记录及批次回执。
 
@@ -55,11 +61,11 @@ Windows 本地看护，程序目录为 `D:\app date\codex project\codex看护软
 
 “额度定时”页支持多个每日时间、端口设置、测试连接、保存并启用、停用定时、立即消耗一次和执行日志。立即消耗需要确认，会消耗真实额度；连接测试只读。长耗时操作交给独立后台进程，关闭窗口不终止它。
 
-本机合并时读取到的实际设置是每天 **10:35**，保留该时间及 Windows 任务原有触发器、错过补执行、登录用户、唤醒等设置，只将执行入口改到项目内 scheduler.ps1。定时任务仍能在看护停止或暂停时独立运行，电脑需在原有登录环境中。
+本机升级时读取到的实际设置是每天 **10:30**，保留该时间及 Windows 任务原有触发器、错过补执行、登录用户、唤醒等设置，只将执行入口改到项目内 scheduler.ps1。定时任务仍能在看护停止或暂停时独立运行，电脑需在原有登录环境中。
 
 定时、手动与全空恢复使用共同 quota-batch.ps1。消耗前持有共享文件锁，避免重叠；同一刷新窗口在 120 秒内已有成功回执可直接复用。账号的消耗意图在 state/quota-coordination/accounts.json 落盘，未知结果跨来源、重启都不会重发，直到能够确认进入新的刷新窗口。批次回执继续保留在 state/quota-batches。定时设置 state/scheduler/config.json，执行日志 logs/scheduler.log，执行结果 state/scheduler/last-run.json。
 
-旧定时器的脚本、启动文件、原配置和日志迁入项目 backups/merge-gui-*，仅供历史追查，不再作为执行入口。桌面仅保留“Codex 额度看护”，使用项目 assets/codex-quota.ico 的原创盾牌时钟图标。桌面、窗口、托盘使用同一图标。
+升级前的本机适配、运行状态、旧定时配置和任务 XML 保存在项目 `backups/update-*`，可用于恢复。桌面“Codex 额度看护”使用项目 assets/codex-quota.ico 的盾牌时钟图标。桌面、窗口、托盘使用同一图标。
 
 ## 验证与维护
 

@@ -12,6 +12,7 @@ function Write-Event {param($Message,$Level) $script:events+= $Message}
 function Write-File {param($Message,$Level)}
 function Request-ManualPause {param($State,$Key,$Reason,$Details) $script:diagnosed++}
 function Get-RecentSessions {return @()}
+function Get-CodexDesktopLaunch {return $null} # Isolate desktop restart from real apps.
 function New-State { $s=[pscustomobject]@{handled=[pscustomobject]@{legacy='preserved'};pendingResumes=[pscustomobject]@{}};Initialize-V2State $s;return $s }
 function Accounts {
     return @(1..5|ForEach-Object {[pscustomobject]@{Id="a$_";Email="a$_@test";Active=($_ -eq 1);Switchable=$true;FiveHour=100;Weekly=(40+$_);FiveHourReset=([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+18000);WeeklyReset=([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+604800);UsageError=$null}})

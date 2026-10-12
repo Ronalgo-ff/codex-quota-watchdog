@@ -50,3 +50,4 @@ foreach ($name in $targets) {
 Write-Host ''
 if ($fixed -gt 0) { Write-Host '  完成。' -ForegroundColor Cyan } else { Write-Host '  没有可处理的文件。' -ForegroundColor Yellow }
 if ($parseFailures -gt 0) { exit 1 }
+exit 0

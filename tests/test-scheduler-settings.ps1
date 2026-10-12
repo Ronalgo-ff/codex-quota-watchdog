@@ -32,6 +32,12 @@ try{
  Check 'empty list disables task without deleting settings or accounts' (-not (Get-ScheduleConfig).enabled -and -not $script:enabled)
  Set-ScheduleConfig 18081 @('10:35') $false
  Check 'disabled schedule retains time' (-not (Get-ScheduleConfig).enabled -and (Get-ScheduleConfig).times[0] -eq '10:35')
+ Write-ScheduleJson (Join-Path $tmp 'rules.local.json') @{CswEndpoint='http://127.0.0.1:18081/__codex_switch__/api/invoke';DesktopCallerThreadId='local-caller';ExpectedAccounts=2}
+ $sharedHash=(Get-FileHash (Join-Path $tmp 'rules.json')).Hash
+ Set-ScheduleConfig 18082 @('10:30')
+ $local=Read-ScheduleJson (Join-Path $tmp 'rules.local.json')
+ Check 'GUI port updates effective local override and preserves caller' ($local.CswEndpoint -eq 'http://127.0.0.1:18082/__codex_switch__/api/invoke' -and $local.DesktopCallerThreadId -eq 'local-caller' -and $local.ExpectedAccounts -eq 2)
+ Check 'machine port change leaves portable rules intact' ((Get-FileHash (Join-Path $tmp 'rules.json')).Hash -eq $sharedHash)
 }finally{Remove-TestDirectory $tmp}
 Write-Host "通过 $pass 项，失败 $fail 项"
 exit $(if($fail){1}else{0})

@@ -1,6 +1,7 @@
 # Local runtime data: account snapshots, conversation records, receipts and logs.
 /state/
 /logs/
+/rules.local.json
 
 # Historical copies, generated reports and release archives.
 /backups/

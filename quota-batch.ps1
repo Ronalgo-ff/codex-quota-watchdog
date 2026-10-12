@@ -8,8 +8,10 @@ function Save-Batch {
 }
 function Call-Switch([string]$Command,[hashtable]$Arguments=@{}){
     $body=@{command=$Command;args=$Arguments}|ConvertTo-Json -Compress
+    $httpOptions=@{}
+    if(([uri]$batch.endpoint).IsLoopback -and (Get-Command Invoke-RestMethod).Parameters.ContainsKey('NoProxy')){$httpOptions.NoProxy=$true}
     # Deliberately one request only: timeouts can occur after an account was charged.
-    $r=Invoke-RestMethod -Uri $batch.endpoint -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 90
+    $r=Invoke-RestMethod -Uri $batch.endpoint -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 90 @httpOptions
     if(-not $r.ok){throw [string]$r.error}
     return $r.result
 }

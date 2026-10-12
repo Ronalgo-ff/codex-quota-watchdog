@@ -30,9 +30,11 @@ try{
     }
     $port=[int]$config.port;if($request -and $request.PSObject.Properties['port']){$port=[int]$request.port}
     $endpoint="http://127.0.0.1:$port/__codex_switch__/api/invoke"
+    $httpOptions=@{}
+    if((Get-Command Invoke-RestMethod).Parameters.ContainsKey('NoProxy')){$httpOptions.NoProxy=$true}
     $deadline=(Get-Date).AddMinutes(10);$accounts=@()
     do{
-        try{$r=Invoke-RestMethod -Uri $endpoint -Method Post -ContentType application/json -Body '{"command":"list_accounts","args":{}}' -TimeoutSec 8;if(-not $r.ok){throw $r.error};$accounts=@($r.result);break}
+        try{$r=Invoke-RestMethod -Uri $endpoint -Method Post -ContentType application/json -Body '{"command":"list_accounts","args":{}}' -TimeoutSec 8 @httpOptions;if(-not $r.ok){throw $r.error};$accounts=@($r.result);break}
         catch{if(-not $RunOnce -or (Get-Date) -ge $deadline){throw};Start-Sleep -Seconds 10}
     }while($true)
     if($request -and $request.action -eq 'test'){

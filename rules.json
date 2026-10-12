@@ -1,4 +1,4 @@
-﻿{
+{
   "_说明1": "这是看护脚本的【外部规则文件】。写哪个键就覆盖哪个键，没写的用脚本里的默认值。",
   "_说明2": "改这里就够了，不用动 codex-autopilot.ps1。下划线开头的键都只当注释，不生效。",
   "_说明3": "改完直接重启看护即可生效（脚本启动时会打印【已加载 rules.json，覆盖：…】）。",
@@ -36,7 +36,6 @@
   "WaitForResetEnabled": true,
   "WakeBufferSec": 60,
   "ConsumeGapSec": 2,
-  "QuotaSchedulerScript": "D:\\app date\\codex project\\codex看护软件\\scheduler.ps1",
   "QuotaSchedulerTimeoutSec": 900,
   "_说明_节奏": "PollSeconds 是每轮间隔（秒）。StalledMin 多久没动静算停住；InFlightMin 多久内有动静算在跑。",
   "PollSeconds": 3,
@@ -55,6 +54,5 @@
     "purchase more credits"
   ],
   "ExpectedAccounts": 5,
-  "DesktopCallerThreadId": "01a0e435-3432-7bf3-91a5-572e0194a1a0",
   "ResetWaitPolicy": "weekly-eligible"
 }

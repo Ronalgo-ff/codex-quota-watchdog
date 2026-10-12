@@ -28,5 +28,10 @@ if exist "%HERE%fix-encoding.ps1" (
     )
 )
 
+"%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%HERE%setup.ps1" -NoShortcut
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
 "%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%HERE%start-menu.ps1"
 endlocal

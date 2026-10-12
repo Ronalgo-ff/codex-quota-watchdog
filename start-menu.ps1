@@ -72,9 +72,17 @@ function Send-TrayHostCommand {
 
 function Test-Csw {
     try {
+        $endpoint = 'http://127.0.0.1:18080/__codex_switch__/api/invoke'
+        $localRules = Join-Path $Here 'rules.local.json'
+        if (Test-Path -LiteralPath $localRules) {
+            $localConfig = Get-Content -LiteralPath $localRules -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($localConfig.CswEndpoint) { $endpoint = $localConfig.CswEndpoint }
+        }
+        $httpOptions = @{}
+        if (([uri]$endpoint).IsLoopback -and (Get-Command Invoke-RestMethod).Parameters.ContainsKey('NoProxy')) { $httpOptions.NoProxy = $true }
         $body = @{ command = 'get_app_info'; args = @{} } | ConvertTo-Json -Compress
-        $r = Invoke-RestMethod -Uri 'http://127.0.0.1:18080/__codex_switch__/api/invoke' -Method POST `
-                -Body $body -ContentType 'application/json' -TimeoutSec 8
+        $r = Invoke-RestMethod -Uri $endpoint -Method POST `
+                -Body $body -ContentType 'application/json' -TimeoutSec 8 @httpOptions
         return $r.ok
     } catch { return $false }
 }
@@ -94,8 +102,8 @@ function Show-Status {
     }
     Write-Host ''
     Write-Host '  ── Codex Switch 接口 ──' -ForegroundColor Yellow
-    if (Test-Csw) { Write-Host '     在线 (127.0.0.1:18080)' -ForegroundColor Green }
-    else { Write-Host '     连不上！请先启动 Codex Switch' -ForegroundColor Red }
+    if (Test-Csw) { Write-Host '     本机管理接口在线' -ForegroundColor Green }
+    else { Write-Host '     接口未就绪，请检查 Switch 和网页版监听端口' -ForegroundColor Red }
 
     Write-Host ''
     Write-Host '  ── 最近一次报告 ──' -ForegroundColor Yellow
@@ -157,7 +165,7 @@ function Start-Autopilot {
         Read-Host '  回车返回' | Out-Null; return
     }
     if (-not (Test-Csw)) {
-        Write-Host '  Codex Switch 没在运行（127.0.0.1:18080 连不上），先启动它。' -ForegroundColor Red
+        Write-Host '  Switch 本机管理接口未就绪，请在 Switch 设置中启用网页版监听端口。' -ForegroundColor Red
         Read-Host '  回车返回' | Out-Null; return
     }
     $existing = @(Get-AutopilotProcs)

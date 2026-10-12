@@ -64,12 +64,19 @@ public static class QuotaMonitorWindow {
 
     function Test-Csw {
         try {
-            $endpoint='http://127.0.0.1:18080/__codex_switch__/api/invoke'
+            $endpoint = 'http://127.0.0.1:18080/__codex_switch__/api/invoke'
             $rules=Get-Content (Join-Path $Here 'rules.json') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue|ConvertFrom-Json
             if($rules -and $rules.PSObject.Properties['CswEndpoint']){$endpoint=$rules.CswEndpoint}
+            $localRules = Join-Path $Here 'rules.local.json'
+            if (Test-Path -LiteralPath $localRules) {
+                $localConfig = Get-Content -LiteralPath $localRules -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($localConfig.CswEndpoint) { $endpoint = $localConfig.CswEndpoint }
+            }
+            $httpOptions = @{}
+            if (([uri]$endpoint).IsLoopback -and (Get-Command Invoke-RestMethod).Parameters.ContainsKey('NoProxy')) { $httpOptions.NoProxy = $true }
             $body = @{ command = 'get_app_info'; args = @{} } | ConvertTo-Json -Compress
             $reply = Invoke-RestMethod -Uri $endpoint -Method POST `
-                -Body $body -ContentType 'application/json' -TimeoutSec 8
+                -Body $body -ContentType 'application/json' -TimeoutSec 8 @httpOptions
             return [bool]$reply.ok
         } catch { return $false }
     }

@@ -19,7 +19,12 @@ function Normalize-ScheduleTimes($Times){
 }
 function Get-ScheduleConfig{
     $config=Read-ScheduleJson (Join-Path $script:ScheduleRoot 'state\scheduler\config.json')
-    if(-not $config){return [pscustomobject]@{port=18080;times=@();enabled=$false}}
+    if(-not $config){
+        $port=18080
+        $local=Read-ScheduleJson (Join-Path $script:ScheduleRoot 'rules.local.json')
+        if($local -and $local.PSObject.Properties['CswEndpoint']){$port=([uri]$local.CswEndpoint).Port}
+        return [pscustomobject]@{port=$port;times=@();enabled=$false}
+    }
     return $config
 }
 function Get-ScheduleTaskAction{
@@ -41,8 +46,10 @@ function Set-ScheduleConfig($Port,$Times,[bool]$Enabled=$true){
         if($Enabled){$null=Enable-ScheduledTask -TaskName $script:ScheduleTaskName}else{$null=Disable-ScheduledTask -TaskName $script:ScheduleTaskName}
     }elseif($oldTask){$null=Disable-ScheduledTask -TaskName $script:ScheduleTaskName}
     Write-ScheduleJson (Join-Path $script:ScheduleRoot 'state\scheduler\config.json') @{port=[int]$Port;times=$times;enabled=($Enabled -and $times.Count -gt 0)}
-    $rules=Read-ScheduleJson (Join-Path $script:ScheduleRoot 'rules.json')
-    if($rules){$rules|Add-Member -NotePropertyName CswEndpoint -NotePropertyValue "http://127.0.0.1:$Port/__codex_switch__/api/invoke" -Force;Write-ScheduleJson (Join-Path $script:ScheduleRoot 'rules.json') $rules}
+    $rulesPath=Join-Path $script:ScheduleRoot 'rules.local.json'
+    if(-not(Test-Path -LiteralPath $rulesPath)){$rulesPath=Join-Path $script:ScheduleRoot 'rules.json'}
+    $rules=Read-ScheduleJson $rulesPath
+    if($rules){$rules|Add-Member -NotePropertyName CswEndpoint -NotePropertyValue "http://127.0.0.1:$Port/__codex_switch__/api/invoke" -Force;Write-ScheduleJson $rulesPath $rules}
 }
 function Write-SchedulerEvent($Message,$Level='INFO'){
     $path=Join-Path $script:ScheduleRoot 'logs\scheduler.log';$null=New-Item -ItemType Directory (Split-Path $path -Parent) -Force

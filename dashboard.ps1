@@ -43,7 +43,9 @@ function Start-AccountRead{
     $script:fetch=[Management.Automation.PowerShell]::Create()
     [void]$script:fetch.AddScript({param($Port)
         try{
-            $r=Invoke-RestMethod -Uri "http://127.0.0.1:$Port/__codex_switch__/api/invoke" -Method Post -ContentType application/json -Body '{"command":"list_accounts","args":{}}' -TimeoutSec 8
+            $httpOptions=@{}
+            if((Get-Command Invoke-RestMethod).Parameters.ContainsKey('NoProxy')){$httpOptions.NoProxy=$true}
+            $r=Invoke-RestMethod -Uri "http://127.0.0.1:$Port/__codex_switch__/api/invoke" -Method Post -ContentType application/json -Body '{"command":"list_accounts","args":{}}' -TimeoutSec 8 @httpOptions
             if(-not $r.ok){throw $r.error}
             @{ok=$true;accounts=@($r.result|Select-Object id,email,active,directSwitchCompatible,usage)}|ConvertTo-Json -Depth 8 -Compress
         }catch{@{ok=$false;error=$_.Exception.Message}|ConvertTo-Json -Compress}

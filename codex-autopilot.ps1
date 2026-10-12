@@ -71,7 +71,7 @@ $Script:Config = @{
     # desktop 通过桌面自身启动回合，不启动争用会话写入锁的外部 CLI。
     ResumeMode        = 'desktop'
     ExpectedAccounts  = 5
-    DesktopCallerThreadId = '01a0e435-3432-7bf3-91a5-572e0194a1a0'
+    DesktopCallerThreadId = $env:CODEX_THREAD_ID
     ResumeMessage     = '继续'
     ResumeTimeoutSec  = 21600    # 单条续跑最多 6 小时，超时会终止并交给 人工处理
     # Codex CLI 的备用工作目录
@@ -173,6 +173,12 @@ function Import-Rules {
 
 $Script:RulesFile    = Join-Path $PSScriptRoot 'rules.json'
 $Script:RulesApplied = @(Import-Rules -Path $Script:RulesFile -Config $Script:Config)
+$localRules = Join-Path $PSScriptRoot 'rules.local.json'
+if (Test-Path -LiteralPath $localRules) {
+    # Machine-specific values stay out of Git and override portable policy rules.
+    $null = Get-Content -LiteralPath $localRules -Raw -Encoding UTF8 | ConvertFrom-Json
+    $Script:RulesApplied += @(Import-Rules -Path $localRules -Config $Script:Config)
+}
 
 $Script:LogFile     = $null
 $Script:EventFile   = $null
@@ -880,11 +886,13 @@ function Invoke-Csw {
     param([string]$Command, [hashtable]$Arguments = @{})
     $payload = @{ command = $Command; args = $Arguments } | ConvertTo-Json -Compress -Depth 6
     $lastErr = $null
+    $httpOptions = @{}
+    if (([uri]$Script:Config.CswEndpoint).IsLoopback -and (Get-Command Invoke-RestMethod).Parameters.ContainsKey('NoProxy')) { $httpOptions.NoProxy = $true }
     $tries = if ($Command -in @('list_accounts','get_app_info')) { $Script:Config.ApiRetries + 1 } else { 1 }
     for ($i = 1; $i -le $tries; $i++) {
         try {
             $r = Invoke-RestMethod -Uri $Script:Config.CswEndpoint -Method POST `
-                    -Body $payload -ContentType 'application/json' -TimeoutSec 30
+                    -Body $payload -ContentType 'application/json' -TimeoutSec 30 @httpOptions
             if (-not $r.ok) { throw "csw 返回 not-ok：$($r.error)" }
             return $r.result
         } catch {
@@ -2273,6 +2281,7 @@ function Wait-Until {
 }
 
 . (Join-Path $PSScriptRoot 'lib\desktop.ps1')
+. (Join-Path $PSScriptRoot 'lib\desktop-restart.ps1')
 . (Join-Path $PSScriptRoot 'lib\manual-pause.ps1')
 . (Join-Path $PSScriptRoot 'lib\engine-v2.ps1')
 
