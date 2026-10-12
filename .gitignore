@@ -1,0 +1,23 @@
+# Local runtime data: account snapshots, conversation records, receipts and logs.
+/state/
+/logs/
+
+# Historical copies, generated reports and release archives.
+/backups/
+/patches/
+*.bak
+*.bak-*
+*.zip
+*.log
+*.tmp
+
+# Credentials and local editor files.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
