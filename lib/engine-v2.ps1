@@ -359,7 +359,7 @@ function Start-QuotaBatch {
     $id=[guid]::NewGuid().ToString('N');$dir=Join-Path $Script:Config.StateDir 'quota-batches'
     $null=New-Item -ItemType Directory -Path $dir -Force
     $job=Join-Path $dir ($id+'.json')
-    $batch=[ordered]@{id=$id;waitPolicy=$Script:Config.ResetWaitPolicy;endpoint=$Script:Config.CswEndpoint;startedAt=(Get-Date).ToString('o');phase='prepared';accounts=@($Accounts|ForEach-Object {@{id=$_.Id;phase='pending';error=$null}})}
+    $batch=[ordered]@{id=$id;source='watcher-reset';coordinationDir=(Join-Path $Script:Config.StateDir 'quota-coordination');waitPolicy=$Script:Config.ResetWaitPolicy;endpoint=$Script:Config.CswEndpoint;startedAt=(Get-Date).ToString('o');phase='prepared';accounts=@($Accounts|ForEach-Object {@{id=$_.Id;phase='pending';error=$null}})}
     Write-JsonAtomic $job $batch
     Set-StateFlag $wait 'phase' 'running';Set-StateFlag $wait 'batchFile' $job;Save-State $State
     . (Join-Path $PSScriptRoot 'process.ps1')

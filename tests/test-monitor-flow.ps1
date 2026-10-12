@@ -16,6 +16,7 @@ try {
     $enc=New-Object Text.UTF8Encoding($true)
     $tray=Get-Content (Join-Path $root 'tray.ps1') -Raw -Encoding UTF8
     $tray=$tray.Replace('Local\CodexQuotaAutopilotTray', 'Local\QuotaFlowTray-'+[guid]::NewGuid().ToString('N'))
+    $tray=$tray.Replace("'dashboard.ps1'", "'monitor.ps1'") # Legacy console fallback still supported.
     $tray=$tray.Replace("if (-not (Test-Csw)) { throw 'Codex Switch 尚未运行，请先启动它' }", '# test fixture: no account service')
     $tray=$tray.Replace('-WorkingDirectory $Here | Out-Null','-WorkingDirectory $Here -WindowStyle Hidden | Out-Null')
     [IO.File]::WriteAllText((Join-Path $tmp 'tray.ps1'),$tray,$enc)

@@ -5,7 +5,7 @@ param([switch]$SmokeTest)
 $ErrorActionPreference = 'Stop'
 $Here = $PSScriptRoot
 $WatcherFile = Join-Path $Here 'codex-autopilot.ps1'
-$MonitorFile = Join-Path $Here 'monitor.ps1'
+$MonitorFile = Join-Path $Here 'dashboard.ps1'
 $LogDir = Join-Path $Here 'logs'
 $TrayLog = Join-Path $LogDir 'tray.log'
 $StatusFile = Join-Path $Here 'state\tray-status.json'
@@ -47,6 +47,7 @@ using System.Runtime.InteropServices;
 public static class QuotaMonitorWindow {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd,int msg,IntPtr wParam,IntPtr lParam);
 }
 '@
 
@@ -63,8 +64,11 @@ public static class QuotaMonitorWindow {
 
     function Test-Csw {
         try {
+            $endpoint='http://127.0.0.1:18080/__codex_switch__/api/invoke'
+            $rules=Get-Content (Join-Path $Here 'rules.json') -Raw -Encoding UTF8 -ErrorAction SilentlyContinue|ConvertFrom-Json
+            if($rules -and $rules.PSObject.Properties['CswEndpoint']){$endpoint=$rules.CswEndpoint}
             $body = @{ command = 'get_app_info'; args = @{} } | ConvertTo-Json -Compress
-            $reply = Invoke-RestMethod -Uri 'http://127.0.0.1:18080/__codex_switch__/api/invoke' -Method POST `
+            $reply = Invoke-RestMethod -Uri $endpoint -Method POST `
                 -Body $body -ContentType 'application/json' -TimeoutSec 8
             return [bool]$reply.ok
         } catch { return $false }
@@ -123,14 +127,16 @@ public static class QuotaMonitorWindow {
         $existing = Get-MonitorProcess
         if ($existing) {
             $existing.Refresh()
-            if ($existing.MainWindowHandle -ne [IntPtr]::Zero) {
-                [void][QuotaMonitorWindow]::ShowWindow($existing.MainWindowHandle, 9)
-                [void][QuotaMonitorWindow]::SetForegroundWindow($existing.MainWindowHandle)
+            $handle=$existing.MainWindowHandle
+            try{$ui=Get-Content (Join-Path $Here 'state\dashboard-window.json') -Raw -Encoding UTF8|ConvertFrom-Json;if($ui.pid -eq $existing.Id){$handle=[IntPtr]([long]$ui.handle)}}catch{}
+            if ($handle -ne [IntPtr]::Zero) {
+                [void][QuotaMonitorWindow]::ShowWindow($handle, 9)
+                [void][QuotaMonitorWindow]::SetForegroundWindow($handle)
             }
             return
         }
-        $args = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $MonitorFile
-        Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $args -WorkingDirectory $Here | Out-Null
+        $args = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}"' -f $MonitorFile
+        Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $args -WorkingDirectory $Here -WindowStyle Hidden | Out-Null
     }
 
     function Read-InitialHostCommand {
@@ -184,11 +190,18 @@ public static class QuotaMonitorWindow {
     [void]$menu.Items.Add($exit)
 
     $tray = New-Object System.Windows.Forms.NotifyIcon
-    $tray.Icon = [System.Drawing.SystemIcons]::Application
+    $iconPath=Join-Path $Here 'assets\codex-quota.ico'
+    $tray.Icon = if(Test-Path $iconPath){New-Object System.Drawing.Icon($iconPath)}else{[System.Drawing.SystemIcons]::Application}
     $tray.Text = 'Codex 额度看护'
     $tray.ContextMenuStrip = $menu
     $open.add_Click({ Show-Monitor })
-    $exit.add_Click({ $script:StopOnExit = $true; Stop-Watcher; $context.ExitThread() })
+    $exit.add_Click({
+        $script:StopOnExit = $true;Stop-Watcher;$window=Get-MonitorProcess
+        if($window){
+            try{$ui=Get-Content (Join-Path $Here 'state\dashboard-window.json') -Raw -Encoding UTF8|ConvertFrom-Json;if($ui.pid -eq $window.Id){[void][QuotaMonitorWindow]::PostMessage([IntPtr]([long]$ui.handle),0x0010,[IntPtr]::Zero,[IntPtr]::Zero)}else{[void]$window.CloseMainWindow()}}catch{[void]$window.CloseMainWindow()}
+        }
+        $context.ExitThread()
+    })
     $tray.add_DoubleClick({ Show-Monitor })
     $menu.add_Opening({ Update-Tray })
 

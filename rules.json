@@ -36,7 +36,7 @@
   "WaitForResetEnabled": true,
   "WakeBufferSec": 60,
   "ConsumeGapSec": 2,
-  "QuotaSchedulerScript": "D:\\apps\\codex switch\\CodexSwitchQuotaScheduler_v1.2.ps1",
+  "QuotaSchedulerScript": "D:\\app date\\codex project\\codex看护软件\\scheduler.ps1",
   "QuotaSchedulerTimeoutSec": 900,
   "_说明_节奏": "PollSeconds 是每轮间隔（秒）。StalledMin 多久没动静算停住；InFlightMin 多久内有动静算在跑。",
   "PollSeconds": 3,

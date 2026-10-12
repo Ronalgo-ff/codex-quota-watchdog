@@ -102,7 +102,7 @@ $Script:Config = @{
     WaitForResetEnabled    = $true  # 全空时不死等，等窗口刷新后继续（关掉就退回旧的收摊行为）
     WakeBufferSec          = 60     # 比算出来的刷新时刻**晚**这么多秒再看（用户要求 +1 分钟）
     ConsumeGapSec          = 2      # 逐个触发消耗之间的间隔（和用户那个定时器保持一致）
-    QuotaSchedulerScript   = 'D:\apps\codex switch\CodexSwitchQuotaScheduler_v1.2.ps1'
+    QuotaSchedulerScript   = Join-Path $PSScriptRoot 'scheduler.ps1'
     QuotaSchedulerTimeoutSec = 900
     # 撞墙信号。分两级：
     #   确定级 —— Codex 的明确错误码，5 小时和周额度撞墙都用这个
