@@ -10,9 +10,11 @@ $taskName=Get-QuotaHostTaskName $tmp;$caller=$null;$hostPid=0;$pass=0;$fail=0
 function Check($Name,$Ok){if($Ok){$script:pass++;Write-Host "[PASS] $Name"}else{$script:fail++;Write-Host "[FAIL] $Name"}}
 try{
     Copy-Item -LiteralPath (Join-Path $root 'lib\host.ps1') -Destination (Join-Path $tmp 'host.ps1')
+    Copy-Item -LiteralPath (Join-Path $root 'lib\hidden-host.cs') -Destination (Join-Path $tmp 'hidden-host.cs')
     $enc=New-Object Text.UTF8Encoding($true)
     [IO.File]::WriteAllText((Join-Path $tmp 'fixture.ps1'),@'
-@{pid=$PID;startedAt=(Get-Process -Id $PID).StartTime.ToString('o')}|ConvertTo-Json|Set-Content (Join-Path $PSScriptRoot 'ready.json')
+Add-Type 'using System;using System.Runtime.InteropServices;public class FixtureConsole{[DllImport("kernel32.dll")]public static extern IntPtr GetConsoleWindow();}'
+@{pid=$PID;startedAt=(Get-Process -Id $PID).StartTime.ToString('o');console=([long][FixtureConsole]::GetConsoleWindow())}|ConvertTo-Json|Set-Content (Join-Path $PSScriptRoot 'ready.json')
 while($true){[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'heartbeat.txt'),(Get-Date -Format o));Start-Sleep -Milliseconds 200}
 '@,$enc)
     [IO.File]::WriteAllText((Join-Path $tmp 'caller.ps1'),@'
@@ -25,6 +27,7 @@ Start-Sleep -Seconds 60
     do{Start-Sleep -Milliseconds 200;if(Test-Path (Join-Path $tmp 'ready.json')){break}}while((Get-Date)-lt $deadline)
     $ready=Get-Content (Join-Path $tmp 'ready.json') -Raw|ConvertFrom-Json;$hostPid=[int]$ready.pid
     $task=Get-ScheduledTask -TaskName $taskName
+    Check 'host has no console window or terminal taskbar entry' ($ready.console -eq 0)
     Check 'independent host has no schedule triggers or execution limit' (@($task.Triggers|Where-Object {$_}).Count -eq 0 -and $task.Settings.ExecutionTimeLimit -eq 'PT0S')
     $pidBefore=$hostPid
     $null=Start-QuotaIndependentHost $tmp (Join-Path $tmp 'fixture.ps1')

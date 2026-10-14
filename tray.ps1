@@ -81,6 +81,17 @@ public static class QuotaMonitorWindow {
         } catch { return $false }
     }
 
+    function Start-QuotaHiddenProcess {
+        param([string]$Arguments)
+        $info=New-Object Diagnostics.ProcessStartInfo
+        $info.FileName=(Get-Process -Id $PID).Path
+        $info.Arguments=$Arguments
+        $info.WorkingDirectory=$Here
+        $info.UseShellExecute=$false
+        $info.CreateNoWindow=$true
+        return [Diagnostics.Process]::Start($info)
+    }
+
     function Start-Watcher {
         param([switch]$Live)
         if (@(Get-Watchers).Count -gt 0) { return }
@@ -88,8 +99,7 @@ public static class QuotaMonitorWindow {
         if (-not (Test-Csw)) { throw 'Codex Switch 尚未运行，请先启动它' }
         $mode = if ($Live) { '-Live' } else { '-DryRun' }
         $args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" {1}' -f $WatcherFile, $mode
-        $p = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $args `
-            -WorkingDirectory $Here -WindowStyle Hidden -PassThru
+        $p = Start-QuotaHiddenProcess -Arguments $args
         Write-TrayLog "启动 $mode 看护 PID=$($p.Id)"
         $deadline=(Get-Date).AddSeconds(5)
         do {
@@ -143,7 +153,7 @@ public static class QuotaMonitorWindow {
             return
         }
         $args = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}"' -f $MonitorFile
-        Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $args -WorkingDirectory $Here -WindowStyle Hidden | Out-Null
+        Start-QuotaHiddenProcess -Arguments $args | Out-Null
     }
 
     function Read-InitialHostCommand {

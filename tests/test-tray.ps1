@@ -15,7 +15,7 @@ $monitorText = Get-Content (Join-Path $root 'monitor.ps1') -Raw -Encoding UTF8
 Check 'default launcher validates machine then uses hidden tray entry' ($start -match 'wscript.exe' -and $vbs -match '-WindowStyle Hidden' -and $vbs -match 'launch.ps1' -and $launch -match 'setup.ps1' -and $launch -match 'tray.ps1')
 Check 'original console menu remains available' ($console -match 'start-menu.ps1')
 Check 'double click opens or restores terminal monitor' ($trayText -match '\$tray\.add_DoubleClick\(\{ Show-Monitor \}\)')
-Check 'watcher is launched as independent hidden process' ($trayText -match 'Start-Process[\s\S]+-WindowStyle Hidden -PassThru')
+Check 'watcher is launched without a console' ($trayText -match 'Start-QuotaHiddenProcess -Arguments' -and $trayText -match '\$info.CreateNoWindow=\$true' -and $trayText -match '\$info.UseShellExecute=\$false')
 Check 'right click menu stays minimal' ($trayText -match "ToolStripMenuItem\('打开监控窗口'\)" -and $trayText -match "ToolStripMenuItem\('停止看护并退出'\)" -and $trayText -notmatch "ToolStripMenuItem\('查看日志'\)")
 Check 'monitor tails important events and opens with mode selection' ($monitorText -match '实时日志' -and $monitorText -match 'Read-NewLogLines' -and $monitorText -match '\[1\] 演习' -and $monitorText -match '\[2\] 正常模式')
 Check 'closing monitor is explicitly non-destructive' ($monitorText -match '关闭窗口并收回托盘（不会停止看护）')

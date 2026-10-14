@@ -8,7 +8,16 @@ function Get-QuotaHostTaskName([string]$Root) {
 function Start-QuotaIndependentHost([string]$Root,[string]$ScriptPath) {
     $name=Get-QuotaHostTaskName $Root
     $exe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $action=New-ScheduledTaskAction -Execute $exe -Argument ('-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $ScriptPath) -WorkingDirectory $Root
+    $source=Join-Path $PSScriptRoot 'hidden-host.cs'
+    $hash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.Substring(0,12)
+    $bin=Join-Path $Root 'state\bin';$null=New-Item -ItemType Directory -Path $bin -Force
+    $bridge=Join-Path $bin ('QuotaHiddenHost-'+$hash+'.exe')
+    if(-not(Test-Path -LiteralPath $bridge)){
+        $compiler=Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+        & $compiler /nologo /target:winexe ('/out:'+$bridge) $source
+        if($LASTEXITCODE -ne 0){throw '无法生成无控制台启动器'}
+    }
+    $action=New-ScheduledTaskAction -Execute $bridge -Argument ('"{0}" "{1}"' -f $exe,$ScriptPath) -WorkingDirectory $Root
     $principal=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
     $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
     $task=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
