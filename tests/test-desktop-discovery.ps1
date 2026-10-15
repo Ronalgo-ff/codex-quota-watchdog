@@ -42,7 +42,13 @@ try{
     function Get-TurnView {param($ThreadId) [pscustomobject]@{Id=$ThreadId;Outcome='finished';Status='idle'}}
     $r=Get-DesktopSnapshot
     Check 'list recovery returns to normal routing' ($script:DesktopHealth.mode -eq 'ok' -and $r.Active.Count -eq 0)
-    $script:files=@();$script:DesktopListingRetryAt=(Get-Date).AddSeconds(60)
+    $script:files=@();$script:DesktopListingCache=@([pscustomobject]@{id='thread-6';kind='codex';hostId='local';status='idle';updatedAt=1});$script:DesktopListingRetryAt=(Get-Date).AddSeconds(60)
+    $script:reads=@()
+    function Get-TurnView {param($ThreadId) $script:reads+=$ThreadId;[pscustomobject]@{Id=$ThreadId;Outcome='running';Status='active';At=1}}
+    $r=Get-DesktopSnapshot
+    Check 'overnight expired local index still verifies cached identities' ($script:reads -contains 'thread-6' -and $r.Active.Count -eq 1 -and $r.Active[0].id -eq 'thread-6')
+    Check 'expired cached turns never become resume candidates' ($r.Recent.Count -eq 0)
+    $script:DesktopListingCache=@();$script:DesktopListingRetryAt=(Get-Date).AddSeconds(60)
     $threw=$false;try{Get-DesktopSnapshot|Out-Null}catch{$threw=$true}
     Check 'missing local metadata never permits an unverified switch' $threw
 }finally{Remove-TestDirectory $tmp}

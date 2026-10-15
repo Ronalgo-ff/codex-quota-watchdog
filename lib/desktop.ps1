@@ -49,10 +49,15 @@ function Invoke-DesktopRpc {
 }
 
 $script:DesktopPipe = $null
+$script:DesktopPipeCooldown = @{}
+function Get-DesktopPipePaths {
+    return @([IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'codex-browser-use-' })
+}
 function Find-DesktopPipe {
     $paths = @($script:DesktopPipe, $env:CODEX_APP_TOOLS_PIPE_PATH)
-    $paths += @([IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'codex-browser-use-' })
+    $paths += @(Get-DesktopPipePaths)
     foreach ($path in @($paths | Where-Object { $_ } | Select-Object -Unique)) {
+        if($script:DesktopPipeCooldown.ContainsKey($path) -and (Get-Date) -lt $script:DesktopPipeCooldown[$path]){continue}
         try {
             $catalog = Invoke-DesktopRpc $path 'tools/list' @{threadStartKind='all'} 2
             if (@($catalog.tools | Where-Object { $_.namespace -eq 'codex_app' -and $_.name -eq 'send_message_to_thread' }).Count -eq 1) {
@@ -72,10 +77,20 @@ function Invoke-DesktopTool {
     if (-not $caller) { throw '缺少 DesktopCallerThreadId' }
     $timeout=if($Tool -eq 'list_threads'){5}else{20}
     # Never retry tools/call: a lost response is not proof of a rejected prompt.
-    $r = Invoke-DesktopRpc $path 'tools/call' @{
-        arguments=$Arguments; callerSource='codex'; callId=('autopilot-'+[guid]::NewGuid().ToString('N'))
-        namespace='codex_app'; threadId=$caller; tool=$Tool; turnId=('autopilot-'+[guid]::NewGuid().ToString('N'))
-    } $timeout
+    try{
+        $r = Invoke-DesktopRpc $path 'tools/call' @{
+            arguments=$Arguments; callerSource='codex'; callId=('autopilot-'+[guid]::NewGuid().ToString('N'))
+            namespace='codex_app'; threadId=$caller; tool=$Tool; turnId=('autopilot-'+[guid]::NewGuid().ToString('N'))
+        } $timeout
+    }catch{
+        # A catalog can answer while its task transport is stale. Rotate on the
+        # next operation; never replay this call, especially an uncertain send.
+        if($_.Exception.Message -match '(?i)Desktop pipe|timeout|timed out|closed|connection|Invalid desktop frame|response id mismatch'){
+            $script:DesktopPipeCooldown[$path]=(Get-Date).AddSeconds(30)
+            $script:DesktopPipe=$null
+        }
+        throw
+    }
     $text = (@($r.contentItems | Where-Object {$_.type -eq 'inputText'} | ForEach-Object {$_.text}) -join "`n")
     if (-not $r.success) {
         $errorObject=New-Object InvalidOperationException($text)

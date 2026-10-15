@@ -253,12 +253,27 @@ function Get-Elapsed {
     if ($m -gt 0) { "${m}分${r}秒" } else { "${r}秒" }
 }
 
+function Add-SharedLogLine {
+    param([string]$Path,[string]$Line)
+    for($attempt=0;$attempt -lt 4;$attempt++){
+        $writer=$null
+        try{
+            $share=[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+            $stream=[IO.File]::Open($Path,'Append','Write',$share)
+            $writer=New-Object IO.StreamWriter($stream,(New-Object Text.UTF8Encoding($false)))
+            $writer.WriteLine($Line);return
+        }catch{
+            if($attempt -lt 3){Start-Sleep -Milliseconds (25*($attempt+1))}
+        }finally{if($writer){$writer.Dispose()}}
+    }
+}
+
 function Write-File {
     <# 只写日志文件，不动控制台 —— 用于每次轮询的常规记录 #>
     param([string]$Message, [string]$Level = 'INFO')
     if (-not $Script:LogFile) { return }
     $line = '{0} [+{1,-8}] [{2,-6}] {3}' -f (Get-Date -Format 'MM-dd HH:mm:ss'), (Get-Elapsed), $Level, $Message
-    try { Add-Content -Path $Script:LogFile -Value $line -Encoding UTF8 } catch { }
+    Add-SharedLogLine $Script:LogFile $line
 }
 
 function Write-Event {
@@ -267,10 +282,10 @@ function Write-Event {
     $line = '{0} [+{1,-8}] [{2,-6}] {3}' -f (Get-Date -Format 'MM-dd HH:mm:ss'), (Get-Elapsed), $Level, $Message
     Show-ConsoleLine -Line $line -Level $Level
     if ($Script:LogFile) {
-        try { Add-Content -Path $Script:LogFile -Value $line -Encoding UTF8 } catch { }
+        Add-SharedLogLine $Script:LogFile $line
     }
     if ($Script:EventFile) {
-        try { Add-Content -LiteralPath $Script:EventFile -Value $line -Encoding UTF8 } catch { }
+        Add-SharedLogLine $Script:EventFile $line
     }
 }
 
@@ -526,12 +541,20 @@ function Write-JsonAtomic {
     $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
     try {
         [IO.File]::WriteAllText($tmp, ($Value | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($true)))
-        if (Test-Path -LiteralPath $Path) {
-            # Windows PowerShell converts a null string argument to an empty path.
-            # Keep one previous file for both reports and state.
-            $bak = "$Path.bak"
-            [IO.File]::Replace($tmp, $Path, $bak)
-        } else { [IO.File]::Move($tmp, $Path) }
+        for($attempt=0;;$attempt++){
+            try{
+                if (Test-Path -LiteralPath $Path) {
+                    # Retry the same prepared content, never replay a remote operation.
+                    [IO.File]::Replace($tmp, $Path, "$Path.bak")
+                } else { [IO.File]::Move($tmp, $Path) }
+                break
+            }catch{
+                $cause=$_.Exception;$sharing=$false
+                while($cause){if(($cause.HResult -band 0xffff) -in @(32,33)){$sharing=$true};$cause=$cause.InnerException}
+                if(-not $sharing -or $attempt -ge 5){throw}
+                Start-Sleep -Milliseconds ([int](50*[math]::Pow(2,$attempt)))
+            }
+        }
     } finally {
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
     }

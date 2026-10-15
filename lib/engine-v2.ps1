@@ -194,7 +194,7 @@ function Get-DesktopSnapshot {
     $local=@(Get-LocalDesktopThreads)
     $threads=@(@($listed)+$local |
         Sort-Object updatedAt -Descending | Group-Object id | ForEach-Object {$_.Group[0]} | Sort-Object updatedAt -Descending)
-    if($fallback -and $local.Count -eq 0){throw '桌面列表超时且本地会话索引为空，无法安全核实运行状态'}
+    if($fallback -and $local.Count -eq 0 -and $listed.Count -eq 0){throw '桌面列表超时且本地会话索引为空，无法安全核实运行状态'}
     $recent=@();$active=@();$views=@{}
     try{
         foreach($t in @($threads|Select-Object -First 5)){
@@ -203,9 +203,16 @@ function Get-DesktopSnapshot {
         if($fallback){
             # Protect older active work too. Local metadata only discovers identity;
             # read_thread is authoritative. Never infer idle from file inactivity.
-            $verify=@(@($local)+@($listed|Where-Object {$_.status -in @('active','running','inProgress')})|Group-Object id|ForEach-Object {$_.Group[0]})
+            $cachedSafety=if($local.Count -eq 0){@($listed)}else{@($listed|Where-Object {$_.status -in @('active','running','inProgress')})}
+            $verify=@(@($local)+$cachedSafety|Group-Object id|ForEach-Object {$_.Group[0]})
             foreach($t in $verify){if(-not $views.ContainsKey($t.id)){$views[$t.id]=Get-TurnView $t.id}}
             foreach($v in $views.Values){if($v.Status -in @('active','running','inProgress')){$active+=[pscustomobject]@{id=$v.Id;status=$v.Status}}}
+            if($local.Count -eq 0){
+                # Cached identities remain useful for safety checks after 12 idle hours,
+                # but their old completed turns must not become continuation candidates.
+                $cutoff=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-[int]$Script:Config.ResumeLookbackMin*60
+                $recent=@($recent|Where-Object {[double](Get-StateFlag $_ 'At') -ge $cutoff})
+            }
             Write-Transition 'desktop-list-fallback' '会话列表暂不可用，已改用本地索引并逐条核实桌面状态；切号和续跑检查继续（后续通道状态见底部）' 'WARN'
             $script:DesktopHealth=[pscustomobject]@{mode='fallback';at=(Get-Date).ToString('o');error=$null}
         }else{
@@ -638,7 +645,7 @@ function Invoke-WatchRound {
 
 function Start-WatchLoop {
     param($State,[int]$MaxRounds=0,[switch]$Once)
-    $round=0;$errorStreak=0;$lastError='';$dataFailureSince=$null;$desktopFailureSince=$null
+    $round=0;$errorStreak=0;$lastError='';$dataFailureSince=$null
     while($true){
         Wait-ManualPause
         $round++
@@ -646,7 +653,7 @@ function Start-WatchLoop {
             Invoke-WatchRound $State
             if($errorStreak -gt 0){Write-Event '服务或数据已恢复，继续正常看护' 'OK'}
             $errorStreak=0;$lastError=''
-            $dataFailureSince=$null;$desktopFailureSince=$null
+            $dataFailureSince=$null
         }catch{
             if($_.Exception.Data['QuotaManualPause'] -eq $true){
                 if($Once -or ($MaxRounds -gt 0 -and $round -ge $MaxRounds)){return}
@@ -660,12 +667,10 @@ function Start-WatchLoop {
             $grace=Get-StateFlag $State 'desktopReadyAfter'
             $recovering=$grace -and (Get-Date) -lt [datetime]::Parse($grace)
             if($policy -eq 'wait-data' -and -not $dataFailureSince){$dataFailureSince=Get-Date}
-            # A missing/closed app can simply be intentional. A responsive catalog
-            # with repeated read timeouts is a different incident: bounded diagnosis.
-            if($message -match 'Desktop pipe response timeout|桌面列表超时' -and -not $desktopFailureSince){$desktopFailureSince=Get-Date}
-            $desktopExpired=$desktopFailureSince -and ((Get-Date)-$desktopFailureSince).TotalMinutes -ge 3
+            # Read-only transport outages need no manual acknowledgement. Each failed
+            # round has already stopped before account switching or continuation.
             $dataExpired=$policy -eq 'wait-data' -and $dataFailureSince -and ((Get-Date)-$dataFailureSince).TotalMinutes -ge 5
-            if($policy -eq 'unknown' -or (($dataExpired -or $desktopExpired) -and -not $recovering)){
+            if($policy -eq 'unknown' -or ($dataExpired -and -not $recovering)){
                 try{Request-ManualPause $State ('loop:'+ $message) '看护本轮异常' @{error=$message;stack=$_.ScriptStackTrace}}catch{if($_.Exception.Data['QuotaManualPause'] -ne $true){throw}}
             }
         }

@@ -331,6 +331,13 @@ try{
     function Invoke-WatchRound {param($State) throw 'Codex 桌面通道不可用；保持看护，等待桌面恢复'}
     Start-WatchLoop (New-State) -MaxRounds 6
     Check 'repeated desktop outage never launches automatic diagnosis' ($script:diagnosed -eq $beforeDiagnostics)
+    # Advance a fake wall clock beyond the former three-minute pause threshold.
+    $script:fakeNow=[datetime]'2026-10-15T00:00:00'
+    function Get-Date { $script:fakeNow=$script:fakeNow.AddMinutes(2);return $script:fakeNow }
+    function Invoke-WatchRound {param($State) throw '桌面列表超时且本地会话索引为空，无法安全核实运行状态'}
+    Start-WatchLoop (New-State) -MaxRounds 8
+    Check 'overnight read outage never forces a persistent manual pause' ($script:diagnosed -eq $beforeDiagnostics)
+    Remove-Item Function:\Get-Date
     function Invoke-WatchRound {param($State) throw 'property x cannot be found'}
     Start-WatchLoop (New-State) -MaxRounds 3
     Check 'unknown error requests immediate pause on its first occurrence' ($script:diagnosed -eq $beforeDiagnostics+3)

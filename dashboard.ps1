@@ -8,6 +8,7 @@ $Here=$PSScriptRoot
 if($LibraryOnly){return}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+. (Join-Path $Here 'lib\log-view.ps1')
 [Windows.Forms.Application]::EnableVisualStyles()
 $owned=$false
 $mutex=New-Object Threading.Mutex($true,('Local\CodexQuotaDashboard'+$(if($SmokeTest -or $PreviewPath){'-'+$PID}else{''})),[ref]$owned)
@@ -77,8 +78,12 @@ function Refresh-UI{
         $startButton.Enabled=(-not $script:uiRun -and -not $script:commandId);$dryButton.Enabled=$startButton.Enabled
         if($pause -and $pause.active){$pauseReason.Text='异常暂停：'+$pause.reason+'。处理后点击恢复。';$reportButton.Visible=$true}else{$pauseReason.Text='关闭窗口仍在托盘运行；双击托盘返回本次运行。';$reportButton.Visible=$false}
         $quota=Read-DashboardJson (Join-Path $Here 'state\quota-status.json')
+        if($script:uiRun -and -not $paused -and $quota -and $quota.pid -eq $script:uiRun.pid -and $quota.desktopHealth.mode -in @('degraded','unavailable')){
+            $statusLabel.Text='等待桌面连接';$statusLabel.ForeColor=[Drawing.Color]::Orange
+            $runDetail.Text+=' · 连接恢复中，暂缓自动操作'
+        }
         if($script:uiRun -and $quota -and $quota.pid -eq $script:uiRun.pid -and $quota.waitingReset){$runDetail.Text+='  ·  等待额度刷新 / 消耗核对'}
-        if($script:uiRun){$key=$script:uiRun.id+':';if(Test-Path $script:uiRun.eventFile){$key+=(Get-Item $script:uiRun.eventFile).Length};if($key -ne $script:eventKey){$script:eventKey=$key;$eventsBox.Lines=[string[]](Get-DashboardEvents $Here $script:uiRun);$eventsBox.SelectionStart=$eventsBox.TextLength;$eventsBox.ScrollToCaret()}}
+        if($script:uiRun){$key=$script:uiRun.id+':';if(Test-Path $script:uiRun.eventFile){$key+=(Get-Item $script:uiRun.eventFile).Length};if($key -ne $script:eventKey){$script:eventKey=$key;Set-DashboardLogText $eventsBox ([string[]](Get-DashboardEvents $Here $script:uiRun)) $followEvents.Checked}}
         elseif($script:eventKey){$eventsBox.Text='本次尚未启动看护。';$script:eventKey=''}
         if($script:commandId){
             $reply=Read-DashboardJson (Join-Path $Here 'state\tray-host-result.json')
@@ -91,7 +96,7 @@ function Refresh-UI{
             else{$script:jobProcess.Refresh();if($script:jobProcess.HasExited){Notice '后台操作结束但结果未确认，请查看定时日志。' $true;$script:job=$null}}
         }
         $saveButton.Enabled=(-not $script:job);$testButton.Enabled=$saveButton.Enabled;$consumeButton.Enabled=$saveButton.Enabled;$disableButton.Enabled=$saveButton.Enabled
-        $logPath=Join-Path $Here 'logs\scheduler.log';if(Test-Path $logPath){$key=(Get-Item $logPath).Length.ToString();if($key -ne $script:scheduleKey){$script:scheduleKey=$key;$scheduleLog.Lines=[string[]]@(Get-Content $logPath -Tail 120 -Encoding UTF8);$scheduleLog.SelectionStart=$scheduleLog.TextLength;$scheduleLog.ScrollToCaret()}}
+        $logPath=Join-Path $Here 'logs\scheduler.log';if(Test-Path $logPath){$key=(Get-Item $logPath).Length.ToString();if($key -ne $script:scheduleKey){$script:scheduleKey=$key;Set-DashboardLogText $scheduleLog ([string[]]@(Get-Content $logPath -Tail 120 -Encoding UTF8)) $followSchedule.Checked}}
         if($script:fetch -and $script:fetchHandle.IsCompleted){
             try{$output=@($script:fetch.EndInvoke($script:fetchHandle));$data=($output -join '')|ConvertFrom-Json;if($data.ok){$script:accounts=@($data.accounts);$script:accountError=''}else{$script:accountError='暂不可用；显示上次额度'}}catch{$script:accountError='读取失败；显示上次额度'}finally{$script:fetch.Dispose();$script:fetch=$null}
             Render-Accounts
@@ -119,7 +124,10 @@ $currentLabel=Label $overview '当前账号  未确认' 12 202 580 24 10 $true
 $accountGrid=New-Object Windows.Forms.DataGridView;$accountGrid.Location=New-Object Drawing.Point(12,234);$accountGrid.Size=New-Object Drawing.Size(972,161);$accountGrid.BackgroundColor=[Drawing.Color]::White;$accountGrid.BorderStyle='None';$accountGrid.ReadOnly=$true;$accountGrid.AllowUserToAddRows=$false;$accountGrid.AllowUserToDeleteRows=$false;$accountGrid.AllowUserToResizeRows=$false;$accountGrid.RowHeadersVisible=$false;$accountGrid.EnableHeadersVisualStyles=$false;$accountGrid.AutoSizeColumnsMode='Fill';$accountGrid.SelectionMode='FullRowSelect';$accountGrid.MultiSelect=$false;$accountGrid.ScrollBars='Vertical';$accountGrid.GridColor=$color.border;$accountGrid.ColumnHeadersDefaultCellStyle.BackColor=[Drawing.ColorTranslator]::FromHtml('#E6EDF5');$accountGrid.ColumnHeadersDefaultCellStyle.ForeColor=$color.ink;$accountGrid.ColumnHeadersHeight=29;$accountGrid.RowTemplate.Height=25;$accountGrid.DefaultCellStyle.SelectionBackColor=[Drawing.ColorTranslator]::FromHtml('#E0F2F3');$accountGrid.DefaultCellStyle.SelectionForeColor=$color.ink;$accountGrid.AlternatingRowsDefaultCellStyle.BackColor=[Drawing.ColorTranslator]::FromHtml('#F8FAFC')
 foreach($title in @('账号','五小时剩余','周剩余','五小时恢复时间','状态')){[void]$accountGrid.Columns.Add($title,$title)};$accountGrid.Columns[0].FillWeight=240;$accountGrid.Columns[3].FillWeight=150;$overview.Controls.Add($accountGrid)
 $null=Label $overview '本次运行的重要事件' 12 404 640 25 11 $true
-$eventsBox=New-Object Windows.Forms.TextBox;$eventsBox.Multiline=$true;$eventsBox.ScrollBars='Vertical';$eventsBox.Location=New-Object Drawing.Point(12,434);$eventsBox.Size=New-Object Drawing.Size(972,107);$eventsBox.ReadOnly=$true;$eventsBox.BorderStyle='None';$eventsBox.BackColor=[Drawing.Color]::White;$eventsBox.Font=New-Object Drawing.Font('Microsoft YaHei UI',9);$eventsBox.Text='本次尚未启动看护。';$eventsBox.Anchor='Top,Bottom,Left,Right';$overview.Controls.Add($eventsBox)
+$eventsBox=New-DashboardLogBox $overview 12 434 972 107;$eventsBox.Text='本次尚未启动看护。'
+$followEvents=New-Object Windows.Forms.CheckBox;$followEvents.Text='自动跟随';$followEvents.Checked=$true;$followEvents.Location=New-Object Drawing.Point(690,404);$followEvents.Size=New-Object Drawing.Size(112,25);$overview.Controls.Add($followEvents)
+$latestEvents=Button $overview '最新消息 ↓' 825 400 156
+$latestEvents.Add_Click({$followEvents.Checked=$true;$eventsBox.SelectionStart=$eventsBox.TextLength;$eventsBox.SelectionLength=0;$eventsBox.ScrollToCaret()})
 $null=Label $schedulePage '每天执行时间' 20 17 600 29 16 $true
 $scheduleSummary=Label $schedulePage '由 Windows 定时任务执行，关闭窗口仍然有效。' 20 52 936 34 10 $false 'muted'
 $settingsCard=Panel $schedulePage 20 93 947 245
@@ -134,7 +142,12 @@ $addTime=Button $settingsCard '添加时间' 571 64 148;$removeTime=Button $sett
 $saveButton=Button $settingsCard '保存并启用' 415 167 160 $true;$disableButton=Button $settingsCard '停用定时' 591 167 128
 $consumeButton=Button $schedulePage '立即消耗一次' 20 352 173 $true;$null=Label $schedulePage '对可用账号执行一次；没有额度的跳过。与自动消耗协调，未知结果不重试。' 212 357 752 41 10 $false 'muted'
 $null=Label $schedulePage '定时与手动执行日志' 20 403 930 26 11 $true
-$scheduleLog=New-Object Windows.Forms.TextBox;$scheduleLog.Multiline=$true;$scheduleLog.ScrollBars='Vertical';$scheduleLog.Location=New-Object Drawing.Point(20,435);$scheduleLog.Size=New-Object Drawing.Size(947,106);$scheduleLog.ReadOnly=$true;$scheduleLog.BorderStyle='None';$scheduleLog.BackColor=[Drawing.Color]::White;$scheduleLog.Font=New-Object Drawing.Font('Microsoft YaHei UI',9);$schedulePage.Controls.Add($scheduleLog)
+$scheduleLog=New-DashboardLogBox $schedulePage 20 435 947 106
+$followSchedule=New-Object Windows.Forms.CheckBox;$followSchedule.Text='自动跟随';$followSchedule.Checked=$true;$followSchedule.Location=New-Object Drawing.Point(680,403);$followSchedule.Size=New-Object Drawing.Size(112,25);$schedulePage.Controls.Add($followSchedule)
+$latestSchedule=Button $schedulePage '最新消息 ↓' 811 399 156
+$latestSchedule.Add_Click({$followSchedule.Checked=$true;$scheduleLog.SelectionStart=$scheduleLog.TextLength;$scheduleLog.SelectionLength=0;$scheduleLog.ScrollToCaret()})
+$overview.Add_Resize({Resize-DashboardLogBox $overview $eventsBox $latestEvents $followEvents})
+$schedulePage.Add_Resize({Resize-DashboardLogBox $schedulePage $scheduleLog $latestSchedule $followSchedule})
 $connection=Label $form 'Codex Switch 读取中…' 24 706 600 22 9 $false 'muted';$connection.Anchor='Bottom,Left'
 $notice=Label $form '' 24 684 850 24 9 $false 'accent';$notice.Anchor='Bottom,Left';$hideButton=Button $form '收回托盘' 890 697 138;$hideButton.Anchor='Bottom,Right'
 $startButton.Add_Click({Begin-Command 'start-live'});$dryButton.Add_Click({Begin-Command 'start-dry'})
@@ -148,7 +161,7 @@ $saveButton.Add_Click({try{Begin-ScheduleAction 'save'}catch{Notice $_.Exception
 $disableButton.Add_Click({try{Begin-ScheduleAction 'disable'}catch{Notice $_.Exception.Message $true}})
 $testButton.Add_Click({try{Begin-ScheduleAction 'test'}catch{Notice $_.Exception.Message $true}})
 $consumeButton.Add_Click({if([Windows.Forms.MessageBox]::Show($form,'立即对可用账号消耗一次额度？这会消耗少量 Codex 额度。','确认执行','YesNo','Question') -eq 'Yes'){try{Begin-ScheduleAction 'consume'}catch{Notice $_.Exception.Message $true}}})
-$form.Add_Shown({if(-not $PreviewPath -and -not $SmokeTest){Write-ScheduleJson (Join-Path $Here 'state\dashboard-window.json') @{pid=$PID;handle=$form.Handle.ToInt64();visible=$form.Visible;at=(Get-Date).ToString('o')}}})
+$form.Add_Shown({Resize-DashboardLogBox $overview $eventsBox $latestEvents $followEvents;Resize-DashboardLogBox $schedulePage $scheduleLog $latestSchedule $followSchedule;if($followEvents.Checked){$eventsBox.SelectionStart=$eventsBox.TextLength;$eventsBox.ScrollToCaret()};if(-not $PreviewPath -and -not $SmokeTest){Write-ScheduleJson (Join-Path $Here 'state\dashboard-window.json') @{pid=$PID;handle=$form.Handle.ToInt64();visible=$form.Visible;at=(Get-Date).ToString('o')}}})
 try{
     if($PreviewPath){
         $script:accounts=@(1..5|ForEach-Object {[pscustomobject]@{email="account$_@example.com";active=($_ -eq 1);usage=@{error=$null;primary=@{remainingPercent=100-$_*12;resetsAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+18000};secondary=@{remainingPercent=100-$_*8}}}});$script:accountError='';Render-Accounts

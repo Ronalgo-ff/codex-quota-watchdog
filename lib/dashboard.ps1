@@ -1,5 +1,16 @@
 ﻿# Pure UI helpers; reads snapshots only, no account mutations.
-function Read-DashboardJson($Path){try{if(Test-Path -LiteralPath $Path){return Get-Content -LiteralPath $Path -Raw -Encoding UTF8|ConvertFrom-Json}}catch{};return $null}
+function Read-DashboardJson($Path){
+    $reader=$null
+    try{
+        if(Test-Path -LiteralPath $Path){
+            # The writer atomically replaces snapshots. Readers must allow deletion.
+            $share=[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+            $reader=New-Object IO.StreamReader([IO.File]::Open($Path,'Open','Read',$share),[Text.Encoding]::UTF8)
+            return ($reader.ReadToEnd()|ConvertFrom-Json)
+        }
+    }catch{}finally{if($reader){$reader.Dispose()}}
+    return $null
+}
 function Get-DashboardRun($Root){
     $run=Read-DashboardJson (Join-Path $Root 'state\current-run.json')
     if(-not $run){return $null}
