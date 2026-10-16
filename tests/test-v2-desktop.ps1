@@ -5,7 +5,7 @@ $root=Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'support\fixtures.ps1')
 $tmp=Join-Path $env:TEMP ('desktop-pipe-test-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $tmp -Force
-$name='quota-test-'+[guid]::NewGuid().ToString('N')
+$name='codex-app-tools-quota-test-'+[guid]::NewGuid().ToString('N')
 $server=Join-Path $tmp 'server.ps1'
 $source=@'
 param($PipeName,$Root)
@@ -38,9 +38,15 @@ try{
  $child=Start-Process powershell -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -PipeName "{1}" -Root "{2}"' -f $server,$name,$tmp) -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $tmp 'server.err')
  $deadline=(Get-Date).AddSeconds(5);while(-not(Test-Path (Join-Path $tmp 'ready')) -and (Get-Date)-lt$deadline){Start-Sleep -Milliseconds 50}
  $script:TestPipe='\\.\pipe\'+$name
- function Find-DesktopPipe {$null=Invoke-DesktopRpc $script:TestPipe 'tools/list' @{threadStartKind='all'} 2;return $script:TestPipe}
+ # Exercise real discovery, including OS enumeration and tools/list. Restrict
+ # candidates to this fixture so a failing test can never call the real desktop.
+ $script:RealPipeDiscovery=${function:Get-DesktopPipePaths}
+ function Get-DesktopPipePaths {return @(& $script:RealPipeDiscovery | Where-Object {$_ -eq $script:TestPipe})}
+ $env:CODEX_APP_TOOLS_PIPE_PATH=$null
+ $script:DesktopPipe=$null
  $Script:Config.DesktopCallerThreadId='audit-test-context'
  $v=Get-TurnView 'test-thread'
+ Check 'new app-tools pipe discovered without inherited environment or cached route' ($script:DesktopPipe -eq $script:TestPipe)
  Check 'fragmented native pipe response decoded correctly' ($v.Outcome-eq 'finished' -and $v.Final-eq '任务尚未完成。')
  $reply=Invoke-DesktopTool 'send_message_to_thread' @{threadId='test-thread';hostId='local';prompt='继续'}
  Check 'native desktop send receives structured acknowledgement' ($reply.status-eq 'sent')

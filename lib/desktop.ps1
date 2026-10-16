@@ -51,7 +51,13 @@ function Invoke-DesktopRpc {
 $script:DesktopPipe = $null
 $script:DesktopPipeCooldown = @{}
 function Get-DesktopPipePaths {
-    return @([IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'codex-browser-use-' })
+    param([string[]]$Paths)
+    if (-not $PSBoundParameters.ContainsKey('Paths')) { $Paths = [IO.Directory]::GetFiles('\\.\pipe\') }
+    # New desktops separate app tools from browser automation. The browser-only
+    # pipes do not serve tools/list; retain the old app transport for older builds.
+    $appTools = @($Paths | Where-Object { $_ -match '^\\\\\.\\pipe\\codex-app-tools-[^\\]+$' })
+    $legacy = @($Paths | Where-Object { $_ -match '^\\\\\.\\pipe\\codex-browser-use-[^\\]+$' })
+    return @(@($appTools) + @($legacy) | Select-Object -Unique)
 }
 function Find-DesktopPipe {
     $paths = @($script:DesktopPipe, $env:CODEX_APP_TOOLS_PIPE_PATH)
