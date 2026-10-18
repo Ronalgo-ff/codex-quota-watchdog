@@ -74,7 +74,7 @@ try{
         if($s.deliveries.PSObject.Properties[$key]){$s.deliveries.$key.nextAttemptEpoch=0}
         try{Send-DesktopContinue $s $view}catch{if($_.Exception.Data['QuotaManualPause'] -ne $true){throw}}
     }
-    Check 'prolonged loading keeps bounded retries and pauses at eight' ($s.deliveries.$key.attempts -eq 8 -and $script:pauses -eq $beforePause+1 -and $s.deliveries.$key.nextAttemptEpoch-[DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -ge 59)
+    Check 'prolonged loading blocks this turn at eight without pausing other work' ($s.deliveries.$key.attempts -eq 8 -and $script:pauses -eq $beforePause -and $s.deliveries.$key.phase -eq 'blocked' -and (Get-StateFlag $s.threadIssues ('resume-config:'+ $key)))
     $script:mode='accept';$s=New-State;$old='desktop:old-thread:older'
     Set-StateFlag $s.deliveries $old ([pscustomobject]@{phase='superseded';threadId='old-thread';sourceTurnId='older';sentEpoch=([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-86400)})
     $before=$script:reads;Update-DesktopDeliveries $s

@@ -63,3 +63,22 @@ function Wait-ManualPause {
         Start-Sleep -Milliseconds 250
     }
 }
+
+# A known terminal failure in one chat must not stop account monitoring or other
+# chats. Persist one report per affected turn, without acknowledging any delivery.
+function Write-ThreadIssue {
+    param($State,[string]$Key,[string]$Reason,$Details)
+    if(-not $Live){Write-Transition ('thread-issue:'+ $Key) "[演习] $Reason";return}
+    $issues=Get-StateFlag $State 'threadIssues'
+    if(-not $issues){$issues=[pscustomobject]@{};Set-StateFlag $State 'threadIssues' $issues}
+    if(Get-StateFlag $issues $Key){return}
+    $id=[guid]::NewGuid().ToString('N')
+    $dir=Join-Path $Script:Config.StateDir 'incidents'
+    $null=New-Item -ItemType Directory -Path $dir -Force
+    $path=Join-Path $dir ('thread-'+$id+'.json')
+    $report=[pscustomobject]@{reportId=$id;scope='thread';at=(Get-Date).ToString('o');reason=$Reason;key=$Key;details=$Details}
+    Write-JsonAtomic $path $report
+    Set-StateFlag $issues $Key ([pscustomobject]@{at=$report.at;reason=$Reason;reportPath=$path})
+    Save-State $State
+    Write-Event "$Reason；仅停止该回合的自动续跑，其他看护继续。报告：$path" 'WARN'
+}

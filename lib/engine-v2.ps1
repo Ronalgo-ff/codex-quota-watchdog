@@ -18,8 +18,16 @@ function Get-RecoveryPolicy {
     if($Message -match '(?i)桌面通道不可用|桌面本地会话状态暂不可用|Desktop pipe|无法连接到远程服务器|无法解析此远程名称|连接超时|连接被拒绝|connection refused|connection reset|name resolution|network is unreachable|timed? out|timeout|超时|\b(408|429|502|503|504)\b|Codex Switch 未返回账号'){
         return 'wait-service'
     }
-    if($Message -match '没有唯一当前账号|当前账号额度数据未知|实际读取.+等待完整数据') {return 'wait-data'}
+    if($Message -match '实际读取.+等待完整数据') {return 'wait-account-set'}
+    if($Message -match '没有唯一当前账号|当前账号额度数据未知') {return 'wait-data'}
     return 'unknown'
+}
+
+function Test-AuthorizationTurnError {
+    param([string]$Message)
+    # Only called on the structured error of a terminal turn. Authentication
+    # cannot be repaired by spending quota or sending the same prompt repeatedly.
+    return $Message -match '(?i)\b(401|403|unauthorized|forbidden)\b|authentication[_ ](?:failed|required)|invalid[_ ](?:api[_ ]key|access[_ ]token)|(?:access[_ ]token|token)[_ ]expired'
 }
 
 function Test-TransientTurnError {
@@ -125,6 +133,9 @@ function Get-TurnView {
     if ($status -in @('active','running','inProgress')) { $view.Outcome='running'; return $view }
     if ($view.User -match '(?i)(不要|不必|不用|停止|暂停).{0,12}(继续|执行|运行|工作|任务)|先等我|等我(确认|回复)|\b(stop|pause)\b') {
         $view.Outcome='waiting'; return $view
+    }
+    if ($t.status -in @('failed','interrupted','aborted') -and (Test-AuthorizationTurnError $view.Error)) {
+        $view.Outcome='blocked';$view.Reason='authorization-required';return $view
     }
     if ($view.Error -match '(?i)usage_limit_exceeded|usage limit|hit your usage limit|quota' -or (Test-CreditsTurnError $view.Error)) { $view.Outcome='limit'; return $view }
     if ($t.status -in @('interrupted','aborted')) {
@@ -234,7 +245,7 @@ function Update-DesktopDeliveries {
     $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     foreach($entry in @($State.deliveries.PSObject.Properties)) {
         $d=$entry.Value
-        if($d.phase -in @('completed','failed')) {continue}
+        if($d.phase -in @('completed','failed','blocked')) {continue}
         # A superseded submission can be reconciled inside its original 120s
         # evidence window. After that it is settled, never replayed or polled.
         if($d.phase -eq 'superseded' -and $now -gt $d.sentEpoch+120){continue}
@@ -261,7 +272,7 @@ function Update-DesktopDeliveries {
             if($d.phase -ne 'started') { Write-Event "续跑已确认开始：$($d.threadId.Substring(0,8))，桌面回合 $($v.TurnId)" 'OK' }
             $d.phase='started'
             if($v.Outcome -notin @('running','waiting')) {
-                $d.phase=if($v.Outcome -in @('limit','unknown','retryable','interrupted')){'failed'}else{'completed'}
+                $d.phase=if($v.Outcome -in @('limit','unknown','retryable','interrupted','blocked')){'failed'}else{'completed'}
                 Write-Event "续跑回合已结束：$($d.threadId.Substring(0,8))，结果 $($v.Outcome)" $(if($d.phase -eq 'failed'){'WARN'}else{'OK'})
             }
             Set-StateFlag $d 'observedTurnId' $v.TurnId
@@ -314,6 +325,10 @@ function Send-DesktopContinue {
     if($State.handled.PSObject.Properties[$key]) {return}
     $existing=Get-StateFlag $State.deliveries $key
     if($existing -and $existing.phase -ne 'deferred'){return}
+    if($existing -and [int](Get-StateFlag $existing 'attempts') -ge 8){
+        Write-ThreadIssue $State ('resume-config:'+ $key) "对话 $($View.Id) 的桌面配置连续八次未就绪，请检查该聊天后手动继续" $existing
+        $existing.phase='blocked';Save-State $State;return
+    }
     $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     if($existing -and $now -lt [double](Get-StateFlag $existing 'nextAttemptEpoch')){return}
     $readyAfter=Get-StateFlag $State 'desktopReadyAfter'
@@ -349,8 +364,12 @@ function Send-DesktopContinue {
             # proven pre-dispatch failure permits another submission.
             Set-StateFlag $delivery 'nextAttemptEpoch' ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+$retrySec)
             Save-State $State
-            Write-Transition ('resume-deferred:'+ $View.Id) "桌面配置仍在加载，继续请求被明确拒绝；$retrySec 秒后核实会话并重试：$($View.Id.Substring(0,8))" 'WARN'
-            if($attempts -ge 8){Request-ManualPause $State ('resume-config:'+ $key) '桌面配置长时间未就绪，暂停等待人工处理' $delivery}
+            if($attempts -ge 8){
+                Write-ThreadIssue $State ('resume-config:'+ $key) "对话 $($View.Id) 的桌面配置连续八次未就绪，请检查该聊天后手动继续" $delivery
+                $delivery.phase='blocked';Save-State $State
+            }else{
+                Write-Transition ('resume-deferred:'+ $View.Id) "桌面配置仍在加载，继续请求被明确拒绝；$retrySec 秒后核实会话并重试：$($View.Id.Substring(0,8))" 'WARN'
+            }
             return
         }
         $delivery.phase='uncertain';$delivery.error=$_.Exception.Message;Save-State $State
@@ -500,6 +519,35 @@ function Invoke-ResetCycle {
     return 'waiting'
 }
 
+function Confirm-SupersededSwitchIntent {
+    param($State,$Intent,$Current,$Accounts)
+    # Only resolve an expired operation that a later account selection replaced.
+    # Never infer success, replay a switch, or acknowledge a newer quota error.
+    if(-not $Live -or -not (Get-StateFlag $Intent 'sourceId') -or -not (Get-StateFlag $Intent 'targetId')){return $false}
+    if($Intent.sourceId -notin @($Accounts.Id) -or $Intent.targetId -notin @($Accounts.Id)){return $false}
+    if($Current.Id -in @($Intent.sourceId,$Intent.targetId)){return $false}
+    $sent=[DateTimeOffset]::MinValue
+    if(-not [DateTimeOffset]::TryParse([string](Get-StateFlag $Intent 'at'),[ref]$sent)){return $false}
+    if(([DateTimeOffset]::Now-$sent).TotalSeconds -lt [Math]::Max(1,[int]$Script:Config.SwitchVerifySec)){return $false}
+    $confirmed=@(Get-Accounts)
+    $active=@($confirmed|Where-Object Active)
+    if($confirmed.Count -ne $Script:Config.ExpectedAccounts -or $active.Count -ne 1 -or $active[0].Id -ne $Current.Id){return $false}
+    if(@($confirmed|Where-Object {$_.Id -notin @($Accounts.Id)}).Count -gt 0 -or @($confirmed.Id|Select-Object -Unique).Count -ne $confirmed.Count){return $false}
+    $a=$active[0]
+    if($a.UsageError -or $null -eq $a.FiveHour -or $null -eq $a.Weekly -or $a.FiveHour -le 0 -or $a.Weekly -le 0){return $false}
+    $history=Get-StateFlag $State 'switchHistory'
+    if(-not $history){$history=[pscustomobject]@{};Set-StateFlag $State 'switchHistory' $history}
+    Set-StateFlag $history $Intent.id ([pscustomobject]@{phase='superseded';at=(Get-Date).ToString('o');observedAccountId=$a.Id;intent=$Intent})
+    # These exact pre-dispatch incidents have a verified different usable account.
+    # New turn IDs still follow the normal quota/credits checks below.
+    foreach($key in @($Intent.incidents)){$State.switchIncidents|Add-Member -NotePropertyName $key -NotePropertyValue $a.Id -Force}
+    Clear-StateFlag $State 'switchIntent'
+    Set-StateFlag $State 'desktopReadyAfter' ((Get-Date).AddSeconds([int]$Script:Config.DesktopReadyDelaySec).ToString('o'))
+    Save-State $State
+    Write-Event '旧切号请求已被后续账号选择取代，当前可用账号已重复核实；旧记录已归档，不重发切号命令' 'OK'
+    return $true
+}
+
 function Invoke-WatchRound {
     param($State)
     Initialize-V2State $State
@@ -545,6 +593,9 @@ function Invoke-WatchRound {
         accounts=@($accounts|Select-Object Id,Active,FiveHour,Weekly,FiveHourReset,WeeklyReset)
         recent=@($recent|Select-Object Id,TurnId,Status,Outcome,Reason,At,Error)
     }
+    foreach($v in @($recent|Where-Object {$_.Outcome -eq 'blocked'})){
+        Write-ThreadIssue $State ('auth:'+ $v.Id+':'+$v.TurnId) "对话 $($v.Id) 的登录或工作区授权失败，请检查登录与权限后手动继续" @{thread=$v.Id;turn=$v.TurnId;error=$v.Error;reason=$v.Reason}
+    }
     foreach($v in @($recent|Where-Object {$_.Outcome -eq 'unknown'})){
         Request-ManualPause $State ('turn:'+ $v.Id+':'+$v.TurnId) '会话错误超出现有规则，暂停等待人工处理' @{thread=$v.Id;turn=$v.TurnId;error=$v.Error}
     }
@@ -561,6 +612,8 @@ function Invoke-WatchRound {
             Set-StateFlag $State 'desktopReadyAfter' ((Get-Date).AddSeconds([int]$Script:Config.DesktopReadyDelaySec).ToString('o'));Save-State $State
             Write-Event "切号已核实生效：$($a.Email)" 'OK'
             $mustSwitch=$dry
+        }elseif(Confirm-SupersededSwitchIntent $State $intent $a $accounts){
+            $mustSwitch=$dry -or @($freshHits|Where-Object {-not $State.switchIncidents.PSObject.Properties[($_.Id+':'+$_.TurnId)]}).Count -gt 0 -or $cycle -eq 'recovered'
         }else{
             Request-ManualPause $State ('switch:'+ $intent.id) '切号结果未确认；不重复发送重启命令' $intent
             return
@@ -631,7 +684,7 @@ function Invoke-WatchRound {
         $n=@($State.handled.PSObject.Properties|Where-Object {$_.Name -like ('desktop:'+$v.Id+':*') -or $_.Name -like ('res:'+$v.Id+':*')}).Count
         if($v.Outcome -ne 'limit' -and $n -ge $Script:Config.ResumeMaxRounds){
             Write-Transition ('cap:'+$v.Id) "对话 $($v.Id.Substring(0,8)) 已达到自动续跑上限，停止重复催促"
-            if($v.Outcome -eq 'retryable'){Request-ManualPause $State ('retry-cap:'+ $v.Id) '常见网络错误经过有限续跑仍未恢复' @{thread=$v.Id;error=$v.Error;attempts=$n}}
+            if($v.Outcome -eq 'retryable'){Write-ThreadIssue $State ('retry-cap:'+ $v.Id+':'+$v.TurnId) "对话 $($v.Id) 的网络错误已达到自动续跑上限，请检查后手动继续" @{thread=$v.Id;turn=$v.TurnId;error=$v.Error;attempts=$n}}
             continue
         }
         # Preserve prior deployment fingerprints, including the merged handled.json.
@@ -666,10 +719,14 @@ function Start-WatchLoop {
             if($message -eq $lastError){$errorStreak++}else{$lastError=$message;$errorStreak=1}
             $grace=Get-StateFlag $State 'desktopReadyAfter'
             $recovering=$grace -and (Get-Date) -lt [datetime]::Parse($grace)
-            if($policy -eq 'wait-data' -and -not $dataFailureSince){$dataFailureSince=Get-Date}
+            if($policy -eq 'wait-account-set'){
+                if(-not $dataFailureSince){$dataFailureSince=Get-Date}
+            }else{$dataFailureSince=$null}
             # Read-only transport outages need no manual acknowledgement. Each failed
             # round has already stopped before account switching or continuation.
-            $dataExpired=$policy -eq 'wait-data' -and $dataFailureSince -and ((Get-Date)-$dataFailureSince).TotalMinutes -ge 5
+            # Missing active-account/quota data is read-only: keep checking until
+            # it recovers. A persistent account-count change still needs review.
+            $dataExpired=$policy -eq 'wait-account-set' -and $dataFailureSince -and ((Get-Date)-$dataFailureSince).TotalMinutes -ge 5
             if($policy -eq 'unknown' -or ($dataExpired -and -not $recovering)){
                 try{Request-ManualPause $State ('loop:'+ $message) '看护本轮异常' @{error=$message;stack=$_.ScriptStackTrace}}catch{if($_.Exception.Data['QuotaManualPause'] -ne $true){throw}}
             }

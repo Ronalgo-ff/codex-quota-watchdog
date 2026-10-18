@@ -1559,9 +1559,19 @@ function Invoke-SwitchAccount {
         Write-Event "[演习] 本来会调用 switch_account_and_restart_chatgpt id=$($Account.Id)" 'DRYRUN'
         return $true
     }
-    $null = Invoke-Csw -Command 'switch_account_and_restart_chatgpt' -Arguments @{ id = $Account.Id }
+    $dispatchError = $null
+    try {
+        $null = Invoke-Csw -Command 'switch_account_and_restart_chatgpt' -Arguments @{ id = $Account.Id }
+    } catch {
+        # Switch can update credentials and then fail to reopen the desktop.
+        # A failed response is not proof that the account change failed. Verify
+        # with reads only; never replay this mutation after an error or timeout.
+        $dispatchError = $_.Exception.Message
+        Write-Event '切号接口返回异常；只读核实目标账号，不重复发送切号命令' 'WARN'
+        Write-File "切号接口异常：$dispatchError" 'WARN'
+    }
     $Script:SwitchCount++
-    Write-Event '切号指令已发出' 'OK'
+    if (-not $dispatchError) { Write-Event '切号指令已发出' 'OK' }
     Write-Event "最多等 $($Script:Config.SwitchVerifySec) 秒，确认 Codex Switch 已切到目标账号"
     $deadline = (Get-Date).AddSeconds([Math]::Max(1, [int]$Script:Config.SwitchVerifySec))
     do {
@@ -1569,6 +1579,7 @@ function Invoke-SwitchAccount {
             $active = @(Get-Accounts | Where-Object { $_.Active })
             if ($active.Count -eq 1 -and $active[0].Id -eq $Account.Id) {
                 Write-Event "已确认当前账号：$($Account.Email)" 'OK'
+                if ($dispatchError) { Write-Event '接口虽返回异常，目标账号已核实生效；接下来检查桌面恢复' 'WARN' }
                 return $true
             }
         } catch {
