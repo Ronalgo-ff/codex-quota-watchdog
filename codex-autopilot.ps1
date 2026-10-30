@@ -71,6 +71,7 @@ $Script:Config = @{
     # desktop 通过桌面自身启动回合，不启动争用会话写入锁的外部 CLI。
     ResumeMode        = 'desktop'
     ExpectedAccounts  = 5
+    FallbackAccountIds = @()    # 最后备用的账号；即使以后新增五小时限制也保留优先级。
     DesktopCallerThreadId = $env:CODEX_THREAD_ID
     ResumeMessage     = '继续'
     ResumeTimeoutSec  = 21600    # 单条续跑最多 6 小时，超时会终止并交给 人工处理
@@ -157,7 +158,7 @@ function Import-Rules {
             if ($p.Name -eq 'ResumeMode' -and $p.Value -notin @('unattended','desktop')) {
                 $applied += 'ResumeMode(仅支持 unattended，已忽略旧配置)'; continue
             }
-            if ($p.Name -in @('UnfinishedMarkers','ConfirmedMarkers','SuspectedMarkers') -and
+            if ($p.Name -in @('UnfinishedMarkers','ConfirmedMarkers','SuspectedMarkers','FallbackAccountIds') -and
                 ($p.Value -isnot [array] -or @($p.Value | Where-Object { $_ -isnot [string] -or -not $_.Trim() }).Count -gt 0)) {
                 $applied += "$($p.Name)(应为非空字符串数组，使用默认值)"; continue
             }
@@ -805,7 +806,7 @@ function Get-WaitPlan {
     $times = @(); $unknown = @()
     foreach ($a in $targets) {
         $needed = @()
-        if ($QuotaType -in @('five-hour','all') -and $a.FiveHour -le 0) { $needed += $a.FiveHourReset }
+        if ($QuotaType -in @('five-hour','all') -and -not (Get-QuotaProperty $a 'FiveHourLimitAbsent') -and $a.FiveHour -le 0) { $needed += $a.FiveHourReset }
         if ($QuotaType -in @('weekly','all') -and $a.Weekly -le 0) { $needed += $a.WeeklyReset }
         foreach ($epoch in $needed) {
             $t = ConvertFrom-ResetEpoch $epoch
@@ -933,33 +934,20 @@ function Get-Accounts {
     $acc = Invoke-Csw -Command 'list_accounts'
     $out = @()
     foreach ($a in @($acc)) {
-        $five = $null; $week = $null; $fiveReset = $null; $weekReset = $null
         $usage = Get-StateFlag $a 'usage'
-        $primary = Get-StateFlag $usage 'primary'
-        $secondary = Get-StateFlag $usage 'secondary'
-        foreach ($window in @('primary','secondary')) {
-            $value = if ($window -eq 'primary') { $primary } else { $secondary }
-            $raw = Get-StateFlag $value 'remainingPercent'
-            $number = 0.0
-            $valid = ($null -ne $raw -and [double]::TryParse([string]$raw,[ref]$number) -and
-                -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number) -and $number -ge 0 -and $number -le 100)
-            if ($window -eq 'primary') {
-                if ($valid) { $five = $number }; $fiveReset = Get-StateFlag $value 'resetsAt'
-            } else {
-                if ($valid) { $week = $number }; $weekReset = Get-StateFlag $value 'resetsAt'
-            }
-        }
+        $quota = ConvertFrom-AccountUsage $usage
         $out += [pscustomobject]@{
             Id            = $a.id
             Email         = $a.email
             Plan          = $a.plan
             Active        = [bool]$a.active
             Switchable    = [bool]$a.directSwitchCompatible
-            FiveHour      = $five
-            Weekly        = $week
-            FiveHourReset = $fiveReset
-            WeeklyReset   = $weekReset
-            UsageError    = Get-StateFlag $usage 'error'
+            FiveHour      = $quota.FiveHour
+            Weekly        = $quota.Weekly
+            FiveHourLimitAbsent = $quota.FiveHourLimitAbsent
+            FiveHourReset = $quota.FiveHourReset
+            WeeklyReset   = $quota.WeeklyReset
+            UsageError    = $quota.UsageError
         }
     }
     return $out
@@ -1492,16 +1480,15 @@ function Get-UsableAccounts {
     param($Accounts)
     return @($Accounts | Where-Object {
         $_.Switchable -and (-not $_.Active) -and
-        (-not $_.PSObject.Properties['UsageError'] -or -not $_.UsageError) -and
-        $null -ne $_.Weekly -and $_.Weekly -gt 0 -and
-        $null -ne $_.FiveHour -and $_.FiveHour -gt 0
+        (Test-AccountQuotaAvailable $_)
     })
 }
 
 function Select-BestAccount {
     <#
       选号规则（用户明确指定）：
-        · 5 小时窗口是「门槛」——只有 5h 还有剩余才配被选中。
+        · 优先普通账号；只有周额度的账号及 FallbackAccountIds 留作最后备用。
+        · 存在 5 小时窗口时，5h 必须还有剩余。
           切号本来就是因为当前号 5h 用完了（0%），其余账号的 5h 不是 0% 就是 100%，
           拿它排序没有意义。
         · 7 天窗口是「选择依据」——通过门槛的账号里挑周额度最多的。
@@ -1515,29 +1502,27 @@ function Select-BestAccount {
 
     $eligible = @($Accounts | Where-Object {
         $_.Switchable -and (-not $_.Active) -and
-        (-not $_.PSObject.Properties['UsageError'] -or -not $_.UsageError) -and
-        $null -ne $_.FiveHour -and $_.FiveHour -gt 0 -and
-        $null -ne $_.Weekly   -and $_.Weekly   -gt 0
+        (Test-AccountQuotaAvailable $_)
     })
 
     # 周额度还有、只是 5h 归零 —— 它们在冷却，不是用完了
     $cooling = @($Accounts | Where-Object {
         $_.Switchable -and (-not $_.Active) -and
+        -not (Get-QuotaProperty $_ 'FiveHourLimitAbsent') -and
         ($null -eq $_.FiveHour -or $_.FiveHour -le 0) -and
         $null -ne $_.Weekly -and $_.Weekly -gt 0
     })
 
     $best = $null
     if ($eligible.Count -gt 0) {
-        $best = @($eligible | Sort-Object -Property @{Expression = { $_.Weekly }; Descending = $true },
-                                                    @{Expression = { $_.FiveHour }; Descending = $true })[0]
+        $best = @(Sort-QuotaAccounts $eligible $Script:Config.FallbackAccountIds)[0]
     }
 
     # 只有"连周额度都没有"才算真空
     $anyWeeklyLeft = @($Accounts | Where-Object { $null -ne $_.Weekly -and $_.Weekly -gt 0 }).Count -gt 0
 
     if ($best) {
-        Write-Event "可切号 $($eligible.Count) 个，选中 $($best.Email)（5h $($best.FiveHour)% / 周 $($best.Weekly)%）"
+        Write-Event "可切号 $($eligible.Count) 个，选中 $($best.Email)（5h $(Format-AccountFiveHour $best) / 周 $($best.Weekly)%）"
     } elseif ($cooling.Count -gt 0) {
         $when = @($cooling | ForEach-Object {
             '{0}({1} 恢复)' -f ($_.Email -replace '@.*', ''), (Format-ResetAt $_.FiveHourReset)
@@ -1554,7 +1539,7 @@ function Select-BestAccount {
 
 function Invoke-SwitchAccount {
     param($Account)
-    Write-Event "切号 → $($Account.Email)（5h 剩余 $($Account.FiveHour)% / 周剩余 $($Account.Weekly)% ← 按周额度最大选中）"
+    Write-Event "切号 → $($Account.Email)（5h $(Format-AccountFiveHour $Account) / 周剩余 $($Account.Weekly)%；普通账号优先，同类按周额度排序）"
     if (-not $Live) {
         Write-Event "[演习] 本来会调用 switch_account_and_restart_chatgpt id=$($Account.Id)" 'DRYRUN'
         return $true
@@ -2314,6 +2299,7 @@ function Wait-Until {
     return 'ok'
 }
 
+. (Join-Path $PSScriptRoot 'lib\account-quota.ps1')
 . (Join-Path $PSScriptRoot 'lib\desktop.ps1')
 . (Join-Path $PSScriptRoot 'lib\desktop-restart.ps1')
 . (Join-Path $PSScriptRoot 'lib\manual-pause.ps1')

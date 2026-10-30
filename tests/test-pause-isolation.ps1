@@ -6,6 +6,7 @@ $root=Split-Path $PSScriptRoot -Parent
 $tmp=Join-Path $env:TEMP ('quota-pause-isolation-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $tmp -Force
 $Script:Config.StateDir=$tmp;$Script:StateFile=Join-Path $tmp 'handled.json';$Live=$true
+$Script:Config.ExpectedAccounts=5 # Fixture count is independent of local account configuration.
 $Script:Config.ResumeQuietMin=0;$Script:Config.ResumeMaxRounds=4
 $script:events=@();$script:sends=@();$script:switches=0;$script:pauses=0;$script:reject=$false;$script:lost=$false
 $script:views=@{};$script:reads=0;$pass=0;$fail=0

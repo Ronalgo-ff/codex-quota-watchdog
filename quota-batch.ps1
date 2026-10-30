@@ -1,6 +1,7 @@
 ﻿# The same consume_account_quota API as the user's scheduler, with per-account write-ahead receipts.
 param([Parameter(Mandatory=$true)][string]$JobFile)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'lib\account-quota.ps1')
 function Save-Batch {
     $tmp=$JobFile+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
     [IO.File]::WriteAllText($tmp,($batch|ConvertTo-Json -Depth 12),(New-Object Text.UTF8Encoding($true)))
@@ -45,23 +46,20 @@ try{
         exit 0
     }
     if((@($actual.id|Sort-Object)-join ',') -ne (@($batch.accounts.id|Sort-Object)-join ',')){throw 'Account set changed before batch'}
+    $quotas=@{}
+    foreach($a in $actual){$quotas[$a.id]=ConvertFrom-AccountUsage $a.usage}
     if($batch.waitPolicy -eq 'weekly-eligible'){
         # Recheck the whole eligible cohort before the first consume request.
         foreach($a in $actual){
-            $week=0.0;$five=0.0
-            $weekKnown=$null -ne $a.usage.secondary.remainingPercent -and [double]::TryParse([string]$a.usage.secondary.remainingPercent,[ref]$week) -and $week -ge 0 -and $week -le 100
-            $fiveReady=$null -ne $a.usage.primary.remainingPercent -and [double]::TryParse([string]$a.usage.primary.remainingPercent,[ref]$five) -and $five -gt 0 -and $five -le 100
-            if($a.usage.error -or -not $weekKnown -or ($week -gt 0 -and -not $fiveReady)){
+            $q=$quotas[$a.id]
+            if($q.UsageError -or $null -eq $q.Weekly -or ($q.Weekly -gt 0 -and -not (Test-AccountQuotaAvailable $q))){
                 $batch.phase='not-ready';Save-Batch;exit 0
             }
         }
     }
     $eligible=@($actual|Where-Object {
-        $five=0.0;$week=0.0
-        -not $_.usage.error -and $null -ne $_.usage.primary.remainingPercent -and $null -ne $_.usage.secondary.remainingPercent -and
-        [double]::TryParse([string]$_.usage.primary.remainingPercent,[ref]$five) -and
-        [double]::TryParse([string]$_.usage.secondary.remainingPercent,[ref]$week) -and
-        $five -gt 0 -and $five -le 100 -and $week -gt 0 -and $week -le 100
+        # Weekly-only accounts have no five-hour timer to start; preserve their quota.
+        -not $quotas[$_.id].FiveHourLimitAbsent -and (Test-AccountQuotaAvailable $quotas[$_.id])
     }|ForEach-Object {$_.id})
     if($eligible.Count -eq 0){
         $batch.phase='not-ready';Save-Batch
@@ -76,7 +74,7 @@ try{
         }
         if($journal){
             $current=@($actual|Where-Object {$_.id -eq $account.id})[0]
-            $reset=[long]$current.usage.primary.resetsAt;$now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+            $reset=[long]$quotas[$current.id].FiveHourReset;$now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
             $previous=$journal.PSObject.Properties[$account.id]
             if($previous){
                 $old=$previous.Value
@@ -105,7 +103,7 @@ try{
         # resulting window so a nearby scheduler/reset caller can reuse it.
         try{
             $after=@(Call-Switch 'list_accounts')
-            foreach($a in $after){$entry=$journal.PSObject.Properties[$a.id];if($entry -and $entry.Value.batch -eq $batch.id -and $entry.Value.phase -eq 'success' -and $a.usage.primary.resetsAt){$entry.Value.reset=[long]$a.usage.primary.resetsAt}}
+            foreach($a in $after){$q=ConvertFrom-AccountUsage $a.usage;$entry=$journal.PSObject.Properties[$a.id];if($entry -and $entry.Value.batch -eq $batch.id -and $entry.Value.phase -eq 'success' -and $q.FiveHourReset){$entry.Value.reset=[long]$q.FiveHourReset}}
             Save-ConsumeJournal
         }catch{} # Confirmed consumption stays confirmed even if this read fails.
     }

@@ -17,6 +17,7 @@ foreach ($l in $lines) {
 }
 
 $Script:Config = @{ LogDir = $env:TEMP }
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\account-quota.ps1')
 $Script:LogFile = $null
 function Write-Log { param([string]$Message, [string]$Level = 'INFO'); Write-Host "     [$Level] $Message" }
 # 主脚本里 Select-BestAccount 会调 Write-Event / Write-File，测试环境给个桩

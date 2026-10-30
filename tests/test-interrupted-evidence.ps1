@@ -5,6 +5,7 @@ $ErrorActionPreference='Stop'
 $tmp=Join-Path $env:TEMP ('quota-interruption-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory $tmp
 $Script:Config.StateDir=$tmp;$Script:StateFile=Join-Path $tmp 'handled.json';$Live=$true
+$Script:Config.ExpectedAccounts=5 # Fixture count is independent of local account configuration.
 $pass=0;$fail=0;$script:sends=@();$script:files=@();$script:data=@{}
 function Check($Name,$OK){if($OK){$script:pass++;Write-Host "[PASS] $Name"}else{$script:fail++;Write-Host "[FAIL] $Name"}}
 function Write-Event {param($Message,$Level)}

@@ -49,9 +49,11 @@ function Get-CreditRetryExclusions {
         }
     }
     $excluded=@()
-    foreach($v in @($FreshHits|Where-Object {Test-CreditsTurnError $_.Error})){
+    foreach($v in @($Recent|Where-Object {$_.Outcome -eq 'limit' -and (Test-CreditsTurnError $_.Error)})){
+        $isFresh=@($FreshHits|Where-Object {$_.Id -eq $v.Id -and $_.TurnId -eq $v.TurnId}).Count -gt 0
         $r=Get-StateFlag $State.creditRecoveries $v.Id
         if(-not $r){
+            if(-not $isFresh){continue}
             $r=[pscustomobject]@{id=[guid]::NewGuid().ToString('N');accounts=[pscustomobject]@{}}
             Set-StateFlag $State.creditRecoveries $v.Id $r
         }
@@ -59,13 +61,14 @@ function Get-CreditRetryExclusions {
         # increase/reset makes an account eligible again; a restart alone does not.
         foreach($a in $Accounts){
             $old=Get-StateFlag $r.accounts $a.Id
-            if($old -and $a.Id -ne $Current.Id -and $null -ne $a.FiveHour -and $null -ne $a.Weekly -and -not $a.UsageError -and
+            if($old -and $a.Id -ne $Current.Id -and (Test-AccountQuotaAvailable $a) -and
                 ($a.FiveHour -gt $old.fiveHour -or $a.Weekly -gt $old.weekly -or
-                 ($a.FiveHourReset -gt $old.fiveHourReset -and [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -ge $old.fiveHourReset))){
+                 ($a.FiveHourReset -gt $old.fiveHourReset -and [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -ge $old.fiveHourReset) -or
+                 ((Get-StateFlag $old 'weeklyReset') -gt 0 -and $a.WeeklyReset -gt $old.weeklyReset -and [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -ge $old.weeklyReset))){
                 Clear-StateFlag $r.accounts $a.Id
             }
         }
-        Set-StateFlag $r.accounts $Current.Id ([pscustomobject]@{turnId=$v.TurnId;fiveHour=$Current.FiveHour;weekly=$Current.Weekly;fiveHourReset=$Current.FiveHourReset})
+        if($isFresh){Set-StateFlag $r.accounts $Current.Id ([pscustomobject]@{turnId=$v.TurnId;fiveHour=$Current.FiveHour;weekly=$Current.Weekly;fiveHourReset=$Current.FiveHourReset;weeklyReset=$Current.WeeklyReset})}
         $excluded+=@($r.accounts.PSObject.Properties|ForEach-Object {$_.Name})
         Save-State $State
     }
@@ -312,11 +315,11 @@ function Get-ResumeAccountProof {
     $active=@($accounts|Where-Object {$_.Active})
     if($accounts.Count -ne $Script:Config.ExpectedAccounts -or $active.Count -ne 1){return $null}
     $a=$active[0]
-    if($a.UsageError -or $null -eq $a.FiveHour -or $null -eq $a.Weekly -or $a.FiveHour -le 0 -or $a.Weekly -le 0){
+    if(-not (Test-AccountQuotaAvailable $a)){
         Write-Transition 'resume-quota-check' '续跑前复查发现当前账号无可用额度或数据未知；不发送继续，交回切号/等待流程' 'WARN'
         return $null
     }
-    return [pscustomobject]@{accountId=$a.Id;fiveHour=$a.FiveHour;weekly=$a.Weekly;checkedAt=(Get-Date).ToString('o')}
+    return [pscustomobject]@{accountId=$a.Id;fiveHour=$a.FiveHour;weekly=$a.Weekly;fiveHourLimitAbsent=(Get-QuotaProperty $a 'FiveHourLimitAbsent');checkedAt=(Get-Date).ToString('o')}
 }
 
 function Send-DesktopContinue {
@@ -402,10 +405,10 @@ function Invoke-ResetCycle {
     $policy=[string]$Script:Config.ResetWaitPolicy
     $waitAll=$policy -eq 'all'
     $weeklyOnly=$policy -eq 'weekly-eligible'
-    $ready=@($Accounts|Where-Object {$null -ne $_.FiveHour -and $null -ne $_.Weekly -and $_.FiveHour -gt 0 -and $_.Weekly -gt 0 -and -not $_.UsageError})
+    $ready=@($Accounts|Where-Object {Test-AccountQuotaAvailable $_})
     if(-not $wait -and $ready.Count -gt 0){return 'none'}
     $weeklyTargets=@($Accounts|Where-Object {$null -ne $_.Weekly -and $_.Weekly -gt 0 -and -not $_.UsageError})
-    $unknown=@($Accounts|Where-Object {$_.UsageError -or $null -eq $_.Weekly -or ($null -eq $_.FiveHour -and (-not $weeklyOnly -or $_.Weekly -gt 0))})
+    $unknown=@($Accounts|Where-Object {$_.UsageError -or $null -eq $_.Weekly -or ($null -eq $_.FiveHour -and -not (Get-QuotaProperty $_ 'FiveHourLimitAbsent') -and (-not $weeklyOnly -or $_.Weekly -gt 0))})
     if($Accounts.Count -ne $Script:Config.ExpectedAccounts -or ($unknown.Count -gt 0 -and (-not $wait -or (($waitAll -or $weeklyOnly) -and $wait.phase -eq 'waiting')))){
         Write-Transition 'reset-unknown' '账号数量或额度数据不完整，等待重新读取；不会批量消耗'
         return 'waiting'
@@ -479,6 +482,13 @@ function Invoke-ResetCycle {
         }
         return 'recovered'
     }
+    if(@($ready|Where-Object {Get-QuotaProperty $_ 'FiveHourLimitAbsent'}).Count -gt 0){
+        # No five-hour timer needs starting for a weekly-only account. Keep all
+        # previous batch receipts and let normal selection prefer ordinary accounts.
+        $wait.phase='success';Save-State $State
+        Write-Event '只有周额度的备用账号已可用，恢复选号，无需为它启动五小时计时' 'OK'
+        return 'recovered'
+    }
     if($weeklyOnly){
         $ids=@($weeklyTargets|ForEach-Object {$_.Id}|Sort-Object)
         $oldIds=@(Get-StateFlag $wait 'eligibleIds')
@@ -493,7 +503,7 @@ function Invoke-ResetCycle {
             Write-Transition 'reset-wait-status' '所有账号周额度均已耗尽；等待周额度恢复，不消耗、不切号' 'INFO'
             return 'waiting'
         }
-        $pending=@($weeklyTargets|Where-Object {$_.FiveHour -le 0})
+        $pending=@($weeklyTargets|Where-Object {-not (Test-AccountQuotaAvailable $_)})
         if($pending.Count -gt 0){
             $last=@($pending|Where-Object {$_.FiveHourReset -gt 0}|Sort-Object FiveHourReset -Descending|Select-Object -First 1)
             $estimate=if($last.Count){Format-ResetAt $last[0].FiveHourReset}else{'未知'}
@@ -534,7 +544,7 @@ function Confirm-SupersededSwitchIntent {
     if($confirmed.Count -ne $Script:Config.ExpectedAccounts -or $active.Count -ne 1 -or $active[0].Id -ne $Current.Id){return $false}
     if(@($confirmed|Where-Object {$_.Id -notin @($Accounts.Id)}).Count -gt 0 -or @($confirmed.Id|Select-Object -Unique).Count -ne $confirmed.Count){return $false}
     $a=$active[0]
-    if($a.UsageError -or $null -eq $a.FiveHour -or $null -eq $a.Weekly -or $a.FiveHour -le 0 -or $a.Weekly -le 0){return $false}
+    if(-not (Test-AccountQuotaAvailable $a)){return $false}
     $history=Get-StateFlag $State 'switchHistory'
     if(-not $history){$history=[pscustomobject]@{};Set-StateFlag $State 'switchHistory' $history}
     Set-StateFlag $history $Intent.id ([pscustomobject]@{phase='superseded';at=(Get-Date).ToString('o');observedAccountId=$a.Id;intent=$Intent})
@@ -558,12 +568,12 @@ function Invoke-WatchRound {
     $quotaFile=Join-Path $Script:Config.StateDir $(if($Live){'quota-status.json'}else{'quota-status.dry-run.json'})
     Write-JsonAtomic $quotaFile @{
         pid=$PID;at=(Get-Date).ToString('o');pollSeconds=$Script:Config.PollSeconds
-        account=$(if($displayActive.Count -eq 1){$displayActive[0]|Select-Object Id,FiveHour,Weekly,UsageError}else{$null})
+        account=$(if($displayActive.Count -eq 1){$displayActive[0]|Select-Object Id,FiveHour,Weekly,FiveHourLimitAbsent,UsageError}else{$null})
         waitingReset=(Get-StateFlag $State 'waitingReset')
         weeklyEligibleAccounts=@($accounts|Where-Object {-not $_.UsageError -and $null -ne $_.Weekly -and $_.Weekly -gt 0}).Count
         desktopHealth=$script:DesktopHealth
         resetWaitPolicy=$Script:Config.ResetWaitPolicy
-        usableAccounts=@($accounts|Where-Object {-not $_.UsageError -and $null -ne $_.FiveHour -and $null -ne $_.Weekly -and $_.FiveHour -gt 0 -and $_.Weekly -gt 0}).Count
+        usableAccounts=@($accounts|Where-Object {Test-AccountQuotaAvailable $_}).Count
     }
     if($accounts.Count -eq 0){throw 'Codex Switch 未返回账号'}
     if($accounts.Count -ne $Script:Config.ExpectedAccounts){throw "预期 $($Script:Config.ExpectedAccounts) 个账号，实际读取 $($accounts.Count) 个；等待完整数据"}
@@ -573,7 +583,7 @@ function Invoke-WatchRound {
     if($active.Count -ne 1){throw 'Codex Switch 没有唯一当前账号'}
     $a=$active[0]
     # An incomplete quota snapshot is not a zero balance.
-    if($null -eq $a.FiveHour -or $null -eq $a.Weekly -or $a.UsageError){throw '当前账号额度数据未知'}
+    if(-not (Test-AccountQuotaKnown $a)){throw '当前账号额度数据未知'}
     # Reconcile before reading the desktop, which may still be closed.
     $restartIntent=Get-StateFlag $State 'switchIntent'
     if($restartIntent -and $restartIntent.targetId -eq $a.Id){Set-CodexDesktopRecovery $State $restartIntent}
@@ -590,7 +600,7 @@ function Invoke-WatchRound {
     $observation=Join-Path $Script:Config.StateDir $(if($Live){'last-observation.json'}else{'last-observation.dry-run.json'})
     Write-JsonAtomic $observation @{
         at=(Get-Date).ToString('o');engine=2;activeAccount=$a.Id
-        accounts=@($accounts|Select-Object Id,Active,FiveHour,Weekly,FiveHourReset,WeeklyReset)
+        accounts=@($accounts|Select-Object Id,Active,FiveHour,Weekly,FiveHourLimitAbsent,FiveHourReset,WeeklyReset)
         recent=@($recent|Select-Object Id,TurnId,Status,Outcome,Reason,At,Error)
     }
     foreach($v in @($recent|Where-Object {$_.Outcome -eq 'blocked'})){
@@ -602,7 +612,7 @@ function Invoke-WatchRound {
     $hits=@($recent|Where-Object {$_.Outcome -eq 'limit'})
     $freshHits=@($hits|Where-Object {-not $State.switchIncidents.PSObject.Properties[($_.Id+':'+$_.TurnId)] -and
         -not (Test-LegacyIncidentHandled $State $_)})
-    $dry=($a.FiveHour -le 0 -or $a.Weekly -le 0)
+    $dry=-not (Test-AccountQuotaAvailable $a)
     $mustSwitch=$dry -or $freshHits.Count -gt 0 -or $cycle -eq 'recovered'
     $intent=Get-StateFlag $State 'switchIntent'
     if($intent){
@@ -628,6 +638,11 @@ function Invoke-WatchRound {
         }
         $creditExcluded=@()
     }else{$creditExcluded=@(Get-CreditRetryExclusions $State $recent $unresolvedHits $accounts $a)}
+    # Do not bounce out of the reserve into ordinary accounts already proven to
+    # fail in this recovery chain; a real quota increase/reset releases them.
+    $preferOrdinary=(Get-AccountPriority $a $Script:Config.FallbackAccountIds) -gt 0 -and
+        @($accounts|Where-Object {-not $_.Active -and $_.Switchable -and $_.Id -notin $creditExcluded -and (Test-AccountQuotaAvailable $_) -and (Get-AccountPriority $_ $Script:Config.FallbackAccountIds) -eq 0}).Count -gt 0
+    $mustSwitch=$mustSwitch -or $preferOrdinary
     if($mustSwitch){
         $hitIds=@($hits | ForEach-Object {$_.Id})
         $blocked=@($snapshot.Active | Where-Object {$_.id -notin $hitIds})
@@ -638,7 +653,7 @@ function Invoke-WatchRound {
             return
         }
         $candidates=@($accounts|Where-Object {$_.Id -notin $creditExcluded})
-        if($creditExcluded.Count -gt 0 -and @($candidates|Where-Object {-not $_.Active -and $_.Switchable -and -not $_.UsageError -and $_.FiveHour -gt 0 -and $_.Weekly -gt 0}).Count -eq 0){
+        if($creditExcluded.Count -gt 0 -and @($candidates|Where-Object {-not $_.Active -and $_.Switchable -and (Test-AccountQuotaAvailable $_)}).Count -eq 0){
             Write-Transition 'credits-no-candidate' '额度错误在已尝试账号中仍未恢复，当前无未尝试的可用账号；停止循环切号，继续监控额度刷新'
             foreach($v in @($freshHits|Where-Object {Test-CreditsTurnError $_.Error})){
                 $recovery=Get-StateFlag $State.creditRecoveries $v.Id
@@ -647,8 +662,8 @@ function Invoke-WatchRound {
             return
         }
         $best=(Select-BestAccount $candidates).Best
-        # After a reset, keep the current account if it already has the highest weekly quota.
-        if($cycle -eq 'recovered' -and -not $dry -and (-not $best -or $a.Weekly -gt $best.Weekly -or ($a.Weekly -eq $best.Weekly -and $a.FiveHour -ge $best.FiveHour))){$best=$null;$mustSwitch=$false}
+        # Compare the same priority tiers after reset, including the current account.
+        if($cycle -eq 'recovered' -and -not $dry -and (-not $best -or @(Sort-QuotaAccounts @($a,$best) $Script:Config.FallbackAccountIds)[0].Id -eq $a.Id)){$best=$null;$mustSwitch=$false}
         if(-not $best -and $mustSwitch){Write-Transition 'no-switchable' '额度不足，暂时没有可切账号；继续等待';return}
         if($best){
             if(-not $Live){Write-Transition 'dry-switch' "[演习] 会切换到 $($best.Email)，周剩余 $($best.Weekly)%" 'DRYRUN';return}
@@ -691,8 +706,11 @@ function Invoke-WatchRound {
         $legacyHandled=Test-LegacyIncidentHandled $State $v
         if(-not $legacyHandled){Send-DesktopContinue $State $v}
     }
-    if($a.FiveHour -lt $Script:Config.WarnPercent){
-        if($Script:WarnedDryAccount -ne $a.Id){$Script:WarnedDryAccount=$a.Id;Write-Event "当前账号额度不足：$($a.Email)，5 小时剩余 $($a.FiveHour)%" 'WARN'}
+    $weeklyOnly=(Get-QuotaProperty $a 'FiveHourLimitAbsent') -eq $true
+    $warnRemaining=if($weeklyOnly){$a.Weekly}else{$a.FiveHour}
+    if($warnRemaining -lt $Script:Config.WarnPercent){
+        $windowName=if($weeklyOnly){'周'}else{'5 小时'}
+        if($Script:WarnedDryAccount -ne $a.Id){$Script:WarnedDryAccount=$a.Id;Write-Event "当前账号额度不足：$($a.Email)，$windowName 剩余 $warnRemaining%" 'WARN'}
     }else{$Script:WarnedDryAccount=$null}
 }
 

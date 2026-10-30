@@ -20,6 +20,8 @@ function Start-Sleep($Seconds){}
 function Job($Name){$job=Join-Path $tmp ($Name+'.json');@{id=$Name;phase='prepared';waitPolicy='any';endpoint='http://fake';coordinationDir=(Join-Path $tmp 'coord');accounts=@(@{id='a1';phase='pending';error=$null})}|ConvertTo-Json -Depth 5|Set-Content $job -Encoding UTF8;return $job}
 function Run($Name){$job=Job $Name;& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tmp 'batch.ps1') -JobFile $job;return Get-Content $job -Raw -Encoding UTF8|ConvertFrom-Json}
 try{
+ $null=New-Item -ItemType Directory (Join-Path $tmp 'lib') -Force
+ Copy-Item -LiteralPath (Join-Path $root 'lib\account-quota.ps1') -Destination (Join-Path $tmp 'lib\account-quota.ps1')
  Set-Content (Join-Path $tmp 'reset.txt') ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+18000)
  $src=Get-Content (Join-Path $root 'quota-batch.ps1') -Raw -Encoding UTF8;$src=$src.Replace("`$ErrorActionPreference='Stop'","`$ErrorActionPreference='Stop'`n"+$stub);[IO.File]::WriteAllText((Join-Path $tmp 'batch.ps1'),$src,(New-Object Text.UTF8Encoding($true)))
  $b=Run 'schedule';Check 'first shared batch consumes with durable shared intent' ($b.phase -eq 'success' -and @(Get-Content (Join-Path $tmp 'calls.txt')).Count -eq 1)

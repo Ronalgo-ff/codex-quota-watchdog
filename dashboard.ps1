@@ -4,6 +4,7 @@ param([switch]$SmokeTest,[switch]$LibraryOnly,[string]$PreviewPath,[ValidateSet(
 $ErrorActionPreference='Stop'
 $Here=$PSScriptRoot
 . (Join-Path $Here 'lib\dashboard.ps1')
+. (Join-Path $Here 'lib\account-quota.ps1')
 . (Join-Path $Here 'lib\scheduler.ps1')
 if($LibraryOnly){return}
 Add-Type -AssemblyName System.Windows.Forms
@@ -56,13 +57,13 @@ function Start-AccountRead{
 function Render-Accounts{
     $accountGrid.Rows.Clear()
     foreach($a in $script:accounts){
-        $errorText=$a.usage.error;$five=$a.usage.primary.remainingPercent;$week=$a.usage.secondary.remainingPercent
-        $state=if($errorText){'读取失败'}elseif($null -eq $five -or $null -eq $week){'额度未知'}elseif($week -le 0){'周额度耗尽'}elseif($five -le 0){'等待五小时恢复'}elseif($a.active){'当前使用'}else{'可用'}
-        $reset='--';try{if($a.usage.primary.resetsAt){$reset=([DateTimeOffset]::FromUnixTimeSeconds([long]$a.usage.primary.resetsAt)).ToLocalTime().ToString('MM-dd HH:mm')}}catch{}
-        [void]$accountGrid.Rows.Add(@($(if($a.active){'● '+$a.email}else{$a.email}),(Format-DashboardPercent $five $errorText),(Format-DashboardPercent $week $errorText),$reset,$state))
+        $q=ConvertFrom-AccountUsage $a.usage;$errorText=$q.UsageError;$week=$q.Weekly
+        $state=if($errorText){'读取失败'}elseif(-not (Test-AccountQuotaKnown $q)){'额度未知'}elseif($week -le 0){'周额度耗尽'}elseif(-not (Test-AccountQuotaAvailable $q)){'等待五小时恢复'}elseif($a.active){'当前使用'}elseif($q.FiveHourLimitAbsent){'备用可用'}else{'可用'}
+        $reset='--';try{if($q.FiveHourReset){$reset=([DateTimeOffset]::FromUnixTimeSeconds([long]$q.FiveHourReset)).ToLocalTime().ToString('MM-dd HH:mm')}}catch{}
+        [void]$accountGrid.Rows.Add(@($(if($a.active){'● '+$a.email}else{$a.email}),(Format-AccountFiveHour $q),(Format-DashboardPercent $week $errorText),$reset,$state))
     }
     $active=@($script:accounts|Where-Object active)
-    if($active.Count -eq 1){$fiveValue.Text=Format-DashboardPercent $active[0].usage.primary.remainingPercent $active[0].usage.error;$weekValue.Text=Format-DashboardPercent $active[0].usage.secondary.remainingPercent $active[0].usage.error;$currentLabel.Text='当前账号  '+$active[0].email}else{$fiveValue.Text='--';$weekValue.Text='--';$currentLabel.Text='当前账号  未确认'}
+    if($active.Count -eq 1){$q=ConvertFrom-AccountUsage $active[0].usage;$fiveValue.Text=Format-AccountFiveHour $q;$weekValue.Text=Format-DashboardPercent $q.Weekly $q.UsageError;$currentLabel.Text='当前账号  '+$active[0].email}else{$fiveValue.Text='--';$weekValue.Text='--';$currentLabel.Text='当前账号  未确认'}
     $connection.Text=$(if($script:accountError){'连接：'+$script:accountError}else{'Codex Switch 已连接 · '+$script:accounts.Count+' 个账号'})
 }
 function Refresh-UI{

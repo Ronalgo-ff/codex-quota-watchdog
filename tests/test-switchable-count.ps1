@@ -21,6 +21,7 @@ $body = [regex]::Replace($body, '(?s)^\s*<#.*?#>\s*\[CmdletBinding\(\)\]\s*param
 $body = [regex]::Replace($body, '(?ms)^\$Script:RulesFile\s*=.*?^\$Script:RulesApplied\s*=.*?$', '')
 
 $hf = Join-Path $tmp 'harness.ps1'
+$body += "`n" + (Get-Content (Join-Path $ap 'lib\account-quota.ps1') -Raw -Encoding UTF8)
 [System.IO.File]::WriteAllText($hf, $body, (New-Object System.Text.UTF8Encoding($true)))
 
 $test = @"

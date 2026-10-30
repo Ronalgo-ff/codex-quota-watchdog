@@ -4,6 +4,7 @@ param([switch]$SmokeTest, [switch]$LibraryOnly)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $Here = $PSScriptRoot
+. (Join-Path $Here 'lib\account-quota.ps1')
 $HostCommandFile = Join-Path $Here 'state\tray-host-command.json'
 $HostResultFile = Join-Path $Here 'state\tray-host-result.json'
 $WatcherControlFile = Join-Path $Here 'state\tray-control.json'
@@ -39,7 +40,7 @@ function Format-QuotaFooter {
         if(-not $a){return ' | 五小时剩余 -- | 周剩余 --（当前账号未知）'}
         $five='--';$week='--'
         if(-not $a.UsageError){
-            if($null -ne $a.FiveHour){$five=('{0:0.#}%' -f [double]$a.FiveHour)}
+            $five=Format-AccountFiveHour $a
             if($null -ne $a.Weekly){$week=('{0:0.#}%' -f [double]$a.Weekly)}
         }
         $label=' | 五小时剩余 {0} | 周剩余 {1}' -f $five,$week

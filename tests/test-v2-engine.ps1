@@ -6,6 +6,7 @@ $root=Split-Path $PSScriptRoot -Parent
 $tmp=Join-Path $env:TEMP ('quota-v2-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $tmp -Force
 $Script:Config.StateDir=$tmp;$Script:StateFile=Join-Path $tmp 'handled.json';$Live=$true
+$Script:Config.ExpectedAccounts=5 # Fixture count is independent of local account configuration.
 $Script:Config.ResetWaitPolicy='all' # Retain regression coverage of optional strict mode.
 $script:events=@();$script:sends=0;$script:switches=0;$script:batches=0;$script:diagnosed=0
 function Write-Event {param($Message,$Level) $script:events+= $Message}

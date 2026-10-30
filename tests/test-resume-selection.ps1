@@ -23,6 +23,7 @@ $body = $code.Substring(0, $cut)
 $body = [regex]::Replace($body, '(?s)^\s*<#.*?#>\s*\[CmdletBinding\(\)\]\s*param\(.*?\)\s*', '')
 
 $hf = Join-Path $tmp 'harness.ps1'
+$body += "`n" + (Get-Content (Join-Path (Split-Path $src -Parent) 'lib\account-quota.ps1') -Raw -Encoding UTF8)
 [System.IO.File]::WriteAllText($hf, $body, (New-Object System.Text.UTF8Encoding($true)))
 
 $test = @"

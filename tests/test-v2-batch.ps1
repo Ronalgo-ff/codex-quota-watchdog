@@ -13,6 +13,11 @@ function Invoke-RestMethod {
     if($r.command -eq 'list_accounts'){
         if((Get-Content (Join-Path $PSScriptRoot 'mode.txt') -Raw).Trim() -eq 'preflight-offline'){throw 'connection timeout before any consume request'}
         $mode=(Get-Content (Join-Path $PSScriptRoot 'mode.txt') -Raw).Trim()
+        if($mode -in @('reserve-ready','reserve-empty','reserve-unknown')){
+            $ordinary=@(1..5|ForEach-Object {@{id="a$_";usage=@{primary=@{remainingPercent=100;windowMinutes=300};secondary=@{remainingPercent=50;windowMinutes=10080};error=$null}}})
+            $ordinary+=@{id='a6';usage=@{primary=@{remainingPercent=$(if($mode -eq 'reserve-empty'){0}else{100});windowMinutes=$(if($mode -eq 'reserve-unknown'){300}else{10080})};secondary=$null;error=$null}}
+            return @{ok=$true;result=$ordinary}
+        }
         if($mode -in @('weekly-pending','weekly-ready')){
             return @{ok=$true;result=@(1..5|ForEach-Object {@{id="a$_";usage=@{primary=@{remainingPercent=$(if($_ -eq 1 -or ($_ -eq 5 -and $mode -eq 'weekly-pending')){0}else{100})};secondary=@{remainingPercent=$(if($_ -eq 1){0}else{50})};error=$null}}})}
         }
@@ -32,6 +37,8 @@ function Invoke-RestMethod {
 function Start-Sleep {param($Seconds)}
 '@
 try{
+    $null=New-Item -ItemType Directory (Join-Path $tmp 'lib') -Force
+    Copy-Item -LiteralPath (Join-Path $root 'lib\account-quota.ps1') -Destination (Join-Path $tmp 'lib\account-quota.ps1')
     $text=Get-Content (Join-Path $root 'quota-batch.ps1') -Raw -Encoding UTF8
     $text=$text.Replace("`$ErrorActionPreference='Stop'","`$ErrorActionPreference='Stop'`n"+$stub)
     $runner=Join-Path $tmp 'batch.ps1'
@@ -80,6 +87,20 @@ try{
             Check 'worker recheck waits for last weekly-positive account without consuming any' ($b.phase -eq 'not-ready' -and @(Get-Content (Join-Path $tmp 'calls.txt')).Count -eq 11)
         }else{
             Check 'worker consumes four ready accounts and skips weekly-zero account' ($b.phase -eq 'partial' -and @($b.accounts|Where-Object {$_.phase -eq 'success'}).Count -eq 4 -and $b.accounts[0].phase -eq 'skipped' -and @(Get-Content (Join-Path $tmp 'calls.txt')).Count -eq 15)
+        }
+    }
+    foreach($mode in @('reserve-ready','reserve-empty','reserve-unknown')){
+        Set-Content (Join-Path $tmp 'mode.txt') $mode
+        $job=Join-Path $tmp ($mode+'.json')
+        $before=@(Get-Content (Join-Path $tmp 'calls.txt')).Count
+        @{id=$mode;endpoint='http://fake.invalid';phase='prepared';waitPolicy='weekly-eligible';accounts=@(1..6|ForEach-Object {@{id="a$_";phase='pending';error=$null}})}|ConvertTo-Json -Depth 8|Set-Content $job -Encoding UTF8
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $runner -JobFile $job
+        $b=Get-Content $job -Raw|ConvertFrom-Json
+        $newCalls=@(Get-Content (Join-Path $tmp 'calls.txt')|Select-Object -Skip $before)
+        if($mode -eq 'reserve-unknown'){
+            Check 'missing weekly data still blocks batch instead of becoming unlimited' ($b.phase -eq 'not-ready' -and $newCalls.Count -eq 0)
+        }else{
+            Check ($mode+' skips weekly-only account and consumes exactly five ordinary accounts') ($b.phase -eq 'partial' -and $b.accounts[5].phase -eq 'skipped' -and $newCalls.Count -eq 5 -and 'a6' -notin $newCalls)
         }
     }
 }finally{Remove-TestDirectory $tmp}
