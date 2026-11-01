@@ -32,6 +32,21 @@ Assert-UI 'reopened view restores the current run selection' ($reserveToggle.Che
 Write-ScheduleJson (Join-Path $Here 'state\current-run.json') @{pid=2147483647;processStartedAt=$at}
 Refresh-UI
 Assert-UI 'stopping returns reserve choice to default off' (-not $reserveToggle.Checked -and $reserveNumber.Value -eq 1 -and $startButton.Enabled)
+foreach($size in @(@(1040,780),@(1500,1050),@(1120,900))){
+    $form.ClientSize=New-Object Drawing.Size($size[0],$size[1]);[Windows.Forms.Application]::DoEvents();Resize-DashboardLayout
+    Assert-UI ('account list and records fit after resizing to '+($size -join 'x')) ($accountGrid.Right -le $overview.ClientSize.Width -and $accountGrid.Bottom -lt $eventsHeading.Top -and $eventsBox.Top -gt $latestEvents.Bottom -and $eventsBox.Bottom -le $overview.ClientSize.Height -and $eventsBox.Height -ge 50)
+    $tabs.SelectedTab=$schedulePage;[Windows.Forms.Application]::DoEvents();Resize-DashboardLayout
+    Assert-UI ('schedule controls and records fit after resizing to '+($size -join 'x')) ($settingsCard.Right -le $schedulePage.ClientSize.Width -and $testButton.Right -le $settingsCard.ClientSize.Width -and $scheduleLog.Top -gt $latestSchedule.Bottom -and $scheduleLog.Bottom -le $schedulePage.ClientSize.Height)
+    $tabs.SelectedTab=$overview
+}
+$fiveValue.Text='12%';$weekValue.Text='74%';Update-QuotaMeters
+Assert-UI 'quota meters reflect actual values and low quota color' ([Math]::Abs($fiveFill.Width/$fiveTrack.ClientSize.Width-0.12) -lt 0.01 -and $fiveValue.ForeColor -eq $color.warning -and [Math]::Abs($weekFill.Width/$weekTrack.ClientSize.Width-0.74) -lt 0.01)
+$fiveValue.Text='无此限制';Update-QuotaMeters
+Assert-UI 'unlimited quota does not display an invented full meter' ($fiveFill.Width -eq 0)
+Set-DashboardLogText $eventsBox @('看护已启动','当前账号额度正常','已恢复中断任务') $true
+[Windows.Forms.Application]::DoEvents()
+$last=$eventsBox.GetPositionFromCharIndex($eventsBox.TextLength-1)
+Assert-UI 'event text remains visible in the redesigned history area' ($eventsBox.Visible -and $eventsBox.Text.Contains('已恢复中断任务') -and $last.Y -ge 0 -and $last.Y -lt $eventsBox.ClientSize.Height -and $eventsBox.ForeColor -ne $eventsBox.BackColor)
 Write-Host "Passed $script:passed; failed 0"
 $form.Hide()
 '@

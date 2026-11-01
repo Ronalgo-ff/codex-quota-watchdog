@@ -1,6 +1,6 @@
 ﻿<# Unified desktop UI. Closing this window leaves watcher and schedule alive. #>
 [CmdletBinding()]
-param([switch]$SmokeTest,[switch]$LibraryOnly,[string]$PreviewPath,[ValidateSet('stopped','running','paused','schedule')][string]$PreviewMode='stopped')
+param([switch]$SmokeTest,[switch]$LibraryOnly,[string]$PreviewPath,[ValidateSet('stopped','running','paused','schedule')][string]$PreviewMode='stopped',[int]$PreviewWidth=0,[int]$PreviewHeight=0)
 $ErrorActionPreference='Stop'
 $Here=$PSScriptRoot
 . (Join-Path $Here 'lib\dashboard.ps1')
@@ -18,12 +18,12 @@ $script:uiRun=$null;$script:commandId=$null;$script:commandAt=$null;$script:job=
 $script:fetch=$null;$script:fetchHandle=$null;$script:fetchAt=[datetime]::MinValue;$script:accounts=@();$script:accountError='读取中'
 $script:eventKey='';$script:scheduleKey='';$script:quitting=$false;$script:timer=$null
 $script:displayReservePolicy=$null;$script:lastActiveRunId=$null
-$color=@{bg=[Drawing.ColorTranslator]::FromHtml('#F2F5FA');nav=[Drawing.ColorTranslator]::FromHtml('#132239');ink=[Drawing.ColorTranslator]::FromHtml('#172B47');muted=[Drawing.ColorTranslator]::FromHtml('#64748B');accent=[Drawing.ColorTranslator]::FromHtml('#087F8C');border=[Drawing.ColorTranslator]::FromHtml('#DAE2ED')}
+$color=@{bg=[Drawing.ColorTranslator]::FromHtml('#F3F6F5');ink=[Drawing.ColorTranslator]::FromHtml('#243635');muted=[Drawing.ColorTranslator]::FromHtml('#64756E');accent=[Drawing.ColorTranslator]::FromHtml('#246557');soft=[Drawing.ColorTranslator]::FromHtml('#E4EFE9');warning=[Drawing.ColorTranslator]::FromHtml('#A36A16');border=[Drawing.ColorTranslator]::FromHtml('#E2E8E4')}
 function Label($Parent,$Text,$X,$Y,$W,$H,$Size=10,$Bold=$false,$Tone='ink'){
-    $c=New-Object Windows.Forms.Label;$c.Text=$Text;$c.Location=New-Object Drawing.Point($X,$Y);$c.Size=New-Object Drawing.Size($W,$H);$c.ForeColor=$color[$Tone];$c.BackColor=[Drawing.Color]::Transparent;$c.Font=New-Object Drawing.Font('Microsoft YaHei UI',$Size,$(if($Bold){[Drawing.FontStyle]::Bold}else{[Drawing.FontStyle]::Regular}));$Parent.Controls.Add($c);return $c
+    $c=New-Object Windows.Forms.Label;$c.Text=$Text;$c.Location=New-Object Drawing.Point($X,$Y);$c.Size=New-Object Drawing.Size($W,$H);$c.ForeColor=$color[$Tone];$c.BackColor=[Drawing.Color]::Transparent;$c.AutoEllipsis=$true;$c.Font=New-Object Drawing.Font('Microsoft YaHei UI',$Size,$(if($Bold){[Drawing.FontStyle]::Bold}else{[Drawing.FontStyle]::Regular}));$Parent.Controls.Add($c);return $c
 }
 function Button($Parent,$Text,$X,$Y,$W=120,$Primary=$false){
-    $c=New-Object Windows.Forms.Button;$c.Text=$Text;$c.Location=New-Object Drawing.Point($X,$Y);$c.Size=New-Object Drawing.Size($W,36);$c.FlatStyle='Flat';$c.FlatAppearance.BorderSize=$(if($Primary){0}else{1});$c.FlatAppearance.BorderColor=$color.border;$c.BackColor=$(if($Primary){$color.accent}else{[Drawing.Color]::White});$c.ForeColor=$(if($Primary){[Drawing.Color]::White}else{$color.ink});$c.Cursor=[Windows.Forms.Cursors]::Hand;$Parent.Controls.Add($c);return $c
+    $c=New-Object Windows.Forms.Button;$c.Text=$Text;$c.Location=New-Object Drawing.Point($X,$Y);$c.Size=New-Object Drawing.Size($W,36);$c.FlatStyle='Flat';$c.FlatAppearance.BorderSize=$(if($Primary){0}else{1});$c.FlatAppearance.BorderColor=$color.border;$c.BackColor=$(if($Primary){$color.accent}else{[Drawing.Color]::White});$c.ForeColor=$(if($Primary){[Drawing.Color]::White}else{$color.ink});$c.Font=New-Object Drawing.Font('Microsoft YaHei UI',9);$c.FlatAppearance.MouseOverBackColor=$(if($Primary){[Drawing.ColorTranslator]::FromHtml('#1D5146')}else{$color.soft});$c.Cursor=[Windows.Forms.Cursors]::Hand;$Parent.Controls.Add($c);return $c
 }
 function Panel($Parent,$X,$Y,$W,$H){$c=New-Object Windows.Forms.Panel;$c.Location=New-Object Drawing.Point($X,$Y);$c.Size=New-Object Drawing.Size($W,$H);$c.BackColor=[Drawing.Color]::White;$Parent.Controls.Add($c);return $c}
 function Notice($Message,$ErrorFlag=$false){$notice.Text=$Message;$notice.ForeColor=$(if($ErrorFlag){[Drawing.Color]::Firebrick}else{$color.accent})}
@@ -63,16 +63,42 @@ function Render-Accounts{
     $reserveTotalLabel.Text='/ '+$reserveTotal+' 个'
     $reserveToggle.Enabled=(-not $script:uiRun -and -not $script:commandId -and $reserveTotal -gt 0 -and -not $script:accountError)
     $reserveNumber.Enabled=($reserveToggle.Enabled -and $reserveToggle.Checked)
+    $accountsHeading.Text='账号列表  '+$script:accounts.Count
+    $sortHint.Text='普通账号 '+($script:accounts.Count-$reserveTotal)+' 个    备选账号 '+$reserveTotal+' 个'
+    $sortColumn=$accountGrid.SortedColumn
+    $sortOrder=$accountGrid.SortOrder
     $accountGrid.Rows.Clear()
-    foreach($a in $script:accounts){
+    $displayAccounts=@($script:accounts|Where-Object active)+@($script:accounts|Where-Object {-not $_.active})
+    foreach($a in $displayAccounts){
         $q=ConvertFrom-AccountUsage $a.usage;$errorText=$q.UsageError;$week=$q.Weekly
         $reserveState=if(-not $script:uiRun){'备选账号'}elseif($script:displayReservePolicy -and $a.id -in @($script:displayReservePolicy.selectedIds)){'本次备选'}else{'备选未启用'}
         $state=if($q.FiveHourLimitAbsent -and $reserveState -eq '备选未启用'){$reserveState}elseif($errorText){'读取失败'}elseif(-not (Test-AccountQuotaKnown $q)){'额度未知'}elseif($week -le 0){'周额度耗尽'}elseif(-not (Test-AccountQuotaAvailable $q)){'等待五小时恢复'}elseif($a.active){'当前使用'}elseif($q.FiveHourLimitAbsent){$reserveState}else{'可用'}
         $reset='--';try{if($q.FiveHourReset){$reset=([DateTimeOffset]::FromUnixTimeSeconds([long]$q.FiveHourReset)).ToLocalTime().ToString('MM-dd HH:mm')}}catch{}
-        [void]$accountGrid.Rows.Add(@($(if($a.active){'● '+$a.email}else{$a.email}),(Format-AccountFiveHour $q),(Format-DashboardPercent $week $errorText),$reset,$state))
+        $rowIndex=$accountGrid.Rows.Add(@($(if($a.active){'● '+$a.email}else{$a.email}),(Format-AccountFiveHour $q),(Format-DashboardPercent $week $errorText),$reset,$state))
+        $accountGrid.Rows[$rowIndex].Tag=[pscustomobject]@{
+            id=$a.id;active=[bool]$a.active
+            reserve=($q.FiveHourLimitAbsent -or ($script:displayReservePolicy -and $a.id -in @(Get-QuotaProperty $script:displayReservePolicy 'knownReserveIds')))
+            weekly=$(if($errorText){$null}else{$week})
+        }
+        $row=$accountGrid.Rows[$rowIndex]
+        if($a.active){
+            $row.DefaultCellStyle.BackColor=$color.soft
+            $row.DefaultCellStyle.SelectionBackColor=[Drawing.ColorTranslator]::FromHtml('#CCE2D5')
+            $row.Cells[0].Style.Font=$script:ActiveAccountFont
+            $row.Cells[4].Style.ForeColor=$color.accent
+        }elseif($row.Tag.reserve){$row.DefaultCellStyle.ForeColor=$color.muted}
+        if(-not $q.FiveHourLimitAbsent -and $null -ne $q.FiveHour -and $q.FiveHour -le 15){$row.Cells[1].Style.ForeColor=$color.warning}
+        if($null -ne $q.Weekly -and $q.Weekly -le 15){$row.Cells[2].Style.ForeColor=$color.warning}
+    }
+    if($sortColumn -and $sortOrder -ne [Windows.Forms.SortOrder]::None){
+        $direction=if($sortOrder -eq [Windows.Forms.SortOrder]::Descending){[ComponentModel.ListSortDirection]::Descending}else{[ComponentModel.ListSortDirection]::Ascending}
+        $accountGrid.Sort($sortColumn,$direction)
+    }else{
+        $accountGrid.Sort($accountGrid.Columns[2],[ComponentModel.ListSortDirection]::Descending)
     }
     $active=@($script:accounts|Where-Object active)
-    if($active.Count -eq 1){$q=ConvertFrom-AccountUsage $active[0].usage;$fiveValue.Text=Format-AccountFiveHour $q;$weekValue.Text=Format-DashboardPercent $q.Weekly $q.UsageError;$currentLabel.Text='当前账号  '+$active[0].email}else{$fiveValue.Text='--';$weekValue.Text='--';$currentLabel.Text='当前账号  未确认'}
+    if($active.Count -eq 1){$q=ConvertFrom-AccountUsage $active[0].usage;$fiveValue.Text=Format-AccountFiveHour $q;$weekValue.Text=Format-DashboardPercent $q.Weekly $q.UsageError;$currentLabel.Text=$active[0].email}else{$fiveValue.Text='--';$weekValue.Text='--';$currentLabel.Text='当前账号未确认'}
+    Update-QuotaMeters
     $connection.Text=$(if($script:accountError){'连接：'+$script:accountError}else{'Codex Switch 已连接 · '+$script:accounts.Count+' 个账号'})
 }
 function Refresh-UI{
@@ -81,11 +107,13 @@ function Refresh-UI{
         $script:uiRun=Get-DashboardRun $Here;$status=Read-DashboardJson (Join-Path $Here 'state\tray-status.json');$pause=Read-DashboardJson (Join-Path $Here 'state\manual-pause.json')
         $paused=$script:uiRun -and $status -and $status.pid -eq $script:uiRun.pid -and $status.paused
         $statusLabel.Text=if(-not $script:uiRun){'尚未启动'}elseif($paused){'已暂停'}else{'看护运行中'}
-        $statusLabel.ForeColor=if($paused){[Drawing.Color]::Orange}else{[Drawing.ColorTranslator]::FromHtml('#83E6E1')}
-        $elapsedValue.Text=Format-DashboardElapsed $script:uiRun
-        $runDetail.Text=if($script:uiRun){'本次看护  ·  PID '+$script:uiRun.pid}else{'设置备选数量后启动看护'}
+        $statusLabel.ForeColor=if($paused){$color.warning}else{$color.accent}
+        $statusLabel.BackColor=if($paused){[Drawing.ColorTranslator]::FromHtml('#FAEED8')}else{$color.soft}
+        $elapsedValue.Text=if($script:uiRun){'已运行 '+(Format-DashboardElapsed $script:uiRun)}else{'等待启动'}
+        $runDetail.Text=if($script:uiRun){'普通账号优先，备选'+$(if([int](Get-QuotaProperty $script:uiRun 'reserveRequestedCount') -gt 0){'已启用 '+$script:uiRun.reserveRequestedCount+' 个'}else{'未启用'})}else{'启动后自动检查额度与任务状态'}
         $pauseButton.Enabled=[bool]$script:uiRun;$pauseButton.Text=if($paused){'恢复看护'}else{'暂停看护'};$stopButton.Enabled=[bool]$script:uiRun
         $startButton.Enabled=(-not $script:uiRun -and -not $script:commandId)
+        $startButton.BackColor=if($startButton.Enabled){$color.accent}else{$color.border}
         if($script:uiRun){
             $requested=[int](Get-QuotaProperty $script:uiRun 'reserveRequestedCount')
             $reserveNumber.Maximum=[Math]::Max([int]$reserveNumber.Maximum,[Math]::Max(1,$requested))
@@ -95,16 +123,16 @@ function Refresh-UI{
         }elseif($script:lastActiveRunId){$reserveToggle.Checked=$false;$reserveNumber.Value=1;$script:lastActiveRunId=$null}
         $reserveToggle.Enabled=(-not $script:uiRun -and -not $script:commandId -and @($script:accounts).Count -gt 0 -and -not $script:accountError -and @($script:accounts|Where-Object {(ConvertFrom-AccountUsage $_.usage).FiveHourLimitAbsent}).Count -gt 0)
         $reserveNumber.Enabled=$reserveToggle.Enabled -and $reserveToggle.Checked
-        if($pause -and $pause.active){$pauseReason.Text='异常暂停：'+$pause.reason+'。处理后点击恢复。';$reportButton.Visible=$true}else{$pauseReason.Text='关闭窗口仍在托盘运行；双击托盘返回本次运行。';$reportButton.Visible=$false}
+        if($pause -and $pause.active){$pauseReason.Text='异常暂停：'+$pause.reason+'。处理后点击恢复。';$pauseReason.ForeColor=$color.warning;$reportButton.Visible=$true}else{$pauseReason.Text='关闭窗口后继续在托盘运行。';$pauseReason.ForeColor=$color.muted;$reportButton.Visible=$false}
         $quota=Read-DashboardJson (Join-Path $Here 'state\quota-status.json')
         $script:displayReservePolicy=if($script:uiRun -and $quota -and $quota.pid -eq $script:uiRun.pid){Get-QuotaProperty $quota 'reservePolicy'}else{$null}
         if($script:uiRun -and -not $paused -and $quota -and $quota.pid -eq $script:uiRun.pid -and $quota.desktopHealth.mode -in @('degraded','unavailable')){
-            $statusLabel.Text='等待桌面连接';$statusLabel.ForeColor=[Drawing.Color]::Orange
-            $runDetail.Text+=' · 连接恢复中，暂缓自动操作'
+            $statusLabel.Text='等待桌面连接';$statusLabel.ForeColor=$color.warning
+            $runDetail.Text='正在恢复桌面连接，连接后继续看护'
         }
         if($script:uiRun -and $quota -and $quota.pid -eq $script:uiRun.pid -and $quota.waitingReset){$runDetail.Text+='  ·  等待额度刷新 / 消耗核对'}
         if($script:uiRun){$key=$script:uiRun.id+':';if(Test-Path $script:uiRun.eventFile){$key+=(Get-Item $script:uiRun.eventFile).Length};if($key -ne $script:eventKey){$script:eventKey=$key;Set-DashboardLogText $eventsBox ([string[]](Get-DashboardEvents $Here $script:uiRun)) $followEvents.Checked}}
-        elseif($script:eventKey){$eventsBox.Text='本次尚未启动看护。';$script:eventKey=''}
+        elseif($script:eventKey){$eventsBox.Text='启动看护后，这里会显示切号、恢复任务等重要事件。';$script:eventKey=''}
         if($script:commandId){
             $reply=Read-DashboardJson (Join-Path $Here 'state\tray-host-result.json')
             if($reply -and $reply.id -eq $script:commandId){Notice $(if($reply.success){'操作完成'}else{$reply.error}) (-not $reply.success);$script:commandId=$null}
@@ -124,58 +152,7 @@ function Refresh-UI{
         Start-AccountRead
     }catch{Notice ('界面刷新失败：'+$_.Exception.Message) $true}
 }
-$form=New-Object Windows.Forms.Form
-$form.Text='Codex 额度看护';$form.StartPosition='CenterScreen';$form.ClientSize=New-Object Drawing.Size(1050,750);$form.MinimumSize=New-Object Drawing.Size(1066,789);$form.Font=New-Object Drawing.Font('Microsoft YaHei UI',9);$form.AutoScaleMode='Dpi';$form.BackColor=$color.bg
-$iconPath=Join-Path $Here 'assets\codex-quota.ico';if(Test-Path $iconPath){$form.Icon=New-Object Drawing.Icon($iconPath)}
-$header=Panel $form 0 0 1050 85;$header.BackColor=$color.nav;$header.Anchor='Top,Left,Right'
-$brand=Label $header 'Codex 额度看护' 24 16 600 33 20 $true;$brand.ForeColor=[Drawing.Color]::White
-$tagline=Label $header '账号看护 · 自动续跑 · 额度定时' 26 54 650 23 10;$tagline.ForeColor=[Drawing.ColorTranslator]::FromHtml('#A9BDD3')
-$statusLabel=Label $header '尚未启动' 817 28 210 31 13 $true 'accent';$statusLabel.TextAlign='MiddleRight';$statusLabel.ForeColor=[Drawing.ColorTranslator]::FromHtml('#83E6E1')
-$tabs=New-Object Windows.Forms.TabControl;$tabs.Location=New-Object Drawing.Point(20,100);$tabs.Size=New-Object Drawing.Size(1010,588);$tabs.Anchor='Top,Bottom,Left,Right';$tabs.Padding=New-Object Drawing.Point(25,8);$form.Controls.Add($tabs)
-$overview=New-Object Windows.Forms.TabPage('看护');$overview.BackColor=$color.bg;$schedulePage=New-Object Windows.Forms.TabPage('额度定时');$schedulePage.BackColor=$color.bg;$tabs.TabPages.AddRange(@($overview,$schedulePage))
-$card1=Panel $overview 12 15 330 94;$card2=Panel $overview 354 15 309 94;$card3=Panel $overview 675 15 309 94
-$null=Label $card1 '已监视运行' 16 10 210 24 10 $false 'muted';$elapsedValue=Label $card1 '尚未启动' 16 36 298 40 22 $true
-$null=Label $card2 '当前账号 · 五小时剩余' 16 10 275 24 10 $false 'muted';$fiveValue=Label $card2 '--' 16 35 270 41 25 $true 'accent'
-$null=Label $card3 '当前账号 · 周剩余' 16 10 275 24 10 $false 'muted';$weekValue=Label $card3 '--' 16 35 270 41 25 $true 'accent'
-$startButton=Button $overview '启动看护' 12 124 144 $true;$pauseButton=Button $overview '暂停看护' 168 124 112;$stopButton=Button $overview '停止看护' 292 124 112
-$reservePanel=Panel $overview 420 124 263 36
-$reserveToggle=New-Object Windows.Forms.CheckBox;$reserveToggle.Text='备选账号';$reserveToggle.Location=New-Object Drawing.Point(10,7);$reserveToggle.Size=New-Object Drawing.Size(100,23);$reserveToggle.ForeColor=$color.ink;$reserveToggle.Checked=$false;$reserveToggle.Enabled=$false;$reservePanel.Controls.Add($reserveToggle)
-$reserveNumber=New-Object Windows.Forms.NumericUpDown;$reserveNumber.Location=New-Object Drawing.Point(119,6);$reserveNumber.Size=New-Object Drawing.Size(60,25);$reserveNumber.Minimum=1;$reserveNumber.Maximum=1;$reserveNumber.Value=1;$reserveNumber.Enabled=$false;$reserveNumber.TextAlign='Center';$reserveNumber.BorderStyle='FixedSingle';$reservePanel.Controls.Add($reserveNumber)
-$reserveTotalLabel=Label $reservePanel '/ 0 个' 187 8 70 22 9 $false 'muted'
-$reserveTip=New-Object Windows.Forms.ToolTip;$reserveTip.SetToolTip($reserveToggle,'仅在普通账号全部不可用时使用。启动时按周剩余额度选定，未选中的账号本次不会补入。');$reserveTip.SetToolTip($reserveNumber,'本次允许使用的备选账号数量；停止看护后可重新选择。')
-$reserveToggle.Add_CheckedChanged({$reserveNumber.Enabled=$reserveToggle.Enabled -and $reserveToggle.Checked})
-$runDetail=Label $overview '设置备选数量后启动看护' 701 132 282 23 9 $false 'muted'
-$pauseReason=Label $overview '关闭窗口仍在托盘运行；双击托盘返回本次运行。' 12 169 798 27 10 $false 'muted';$reportButton=Button $overview '查看异常报告' 825 164 156;$reportButton.Visible=$false
-$currentLabel=Label $overview '当前账号  未确认' 12 202 580 24 10 $true
-$accountGrid=New-Object Windows.Forms.DataGridView;$accountGrid.Location=New-Object Drawing.Point(12,234);$accountGrid.Size=New-Object Drawing.Size(972,161);$accountGrid.BackgroundColor=[Drawing.Color]::White;$accountGrid.BorderStyle='None';$accountGrid.ReadOnly=$true;$accountGrid.AllowUserToAddRows=$false;$accountGrid.AllowUserToDeleteRows=$false;$accountGrid.AllowUserToResizeRows=$false;$accountGrid.RowHeadersVisible=$false;$accountGrid.EnableHeadersVisualStyles=$false;$accountGrid.AutoSizeColumnsMode='Fill';$accountGrid.SelectionMode='FullRowSelect';$accountGrid.MultiSelect=$false;$accountGrid.ScrollBars='Vertical';$accountGrid.GridColor=$color.border;$accountGrid.ColumnHeadersDefaultCellStyle.BackColor=[Drawing.ColorTranslator]::FromHtml('#E6EDF5');$accountGrid.ColumnHeadersDefaultCellStyle.ForeColor=$color.ink;$accountGrid.ColumnHeadersHeight=29;$accountGrid.RowTemplate.Height=25;$accountGrid.DefaultCellStyle.SelectionBackColor=[Drawing.ColorTranslator]::FromHtml('#E0F2F3');$accountGrid.DefaultCellStyle.SelectionForeColor=$color.ink;$accountGrid.AlternatingRowsDefaultCellStyle.BackColor=[Drawing.ColorTranslator]::FromHtml('#F8FAFC')
-foreach($title in @('账号','五小时剩余','周剩余','五小时恢复时间','状态')){[void]$accountGrid.Columns.Add($title,$title)};$accountGrid.Columns[0].FillWeight=240;$accountGrid.Columns[3].FillWeight=150;$overview.Controls.Add($accountGrid)
-$null=Label $overview '本次运行的重要事件' 12 404 640 25 11 $true
-$eventsBox=New-DashboardLogBox $overview 12 434 972 107;$eventsBox.Text='本次尚未启动看护。'
-$followEvents=New-Object Windows.Forms.CheckBox;$followEvents.Text='自动跟随';$followEvents.Checked=$true;$followEvents.Location=New-Object Drawing.Point(690,404);$followEvents.Size=New-Object Drawing.Size(112,25);$overview.Controls.Add($followEvents)
-$latestEvents=Button $overview '最新消息 ↓' 825 400 156
-$latestEvents.Add_Click({$followEvents.Checked=$true;$eventsBox.SelectionStart=$eventsBox.TextLength;$eventsBox.SelectionLength=0;$eventsBox.ScrollToCaret()})
-$null=Label $schedulePage '每天执行时间' 20 17 600 29 16 $true
-$scheduleSummary=Label $schedulePage '由 Windows 定时任务执行，关闭窗口仍然有效。' 20 52 936 34 10 $false 'muted'
-$settingsCard=Panel $schedulePage 20 93 947 245
-$null=Label $settingsCard 'Codex Switch 监听端口' 18 18 238 24 10
-$portBox=New-Object Windows.Forms.NumericUpDown;$portBox.Location=New-Object Drawing.Point(268,15);$portBox.Size=New-Object Drawing.Size(120,29);$portBox.Minimum=1;$portBox.Maximum=65535;$config=Get-ScheduleConfig;$portBox.Value=$config.port;$settingsCard.Controls.Add($portBox)
-$testButton=Button $settingsCard '测试连接' 415 11 140
-$timesList=New-Object Windows.Forms.ListBox;$timesList.Location=New-Object Drawing.Point(18,64);$timesList.Size=New-Object Drawing.Size(370,148);$timesList.Font=New-Object Drawing.Font('Microsoft YaHei UI',14);$timesList.SelectionMode='MultiExtended';$timesList.BorderStyle='FixedSingle';$settingsCard.Controls.Add($timesList)
-foreach($time in @($config.times)){[void]$timesList.Items.Add([string]$time)}
-$scheduleSummary.Text=$(if($config.enabled -and @($config.times).Count){'已启用 · 每天 '+(@($config.times)-join '、')+' · 关闭窗口仍然有效'}else{'定时未启用 · 添加时间后保存并启用'})
-$timePicker=New-Object Windows.Forms.DateTimePicker;$timePicker.Location=New-Object Drawing.Point(415,68);$timePicker.Size=New-Object Drawing.Size(140,29);$timePicker.Format='Custom';$timePicker.CustomFormat='HH:mm';$timePicker.ShowUpDown=$true;$settingsCard.Controls.Add($timePicker)
-$addTime=Button $settingsCard '添加时间' 571 64 148;$removeTime=Button $settingsCard '移除选中' 415 110 140;$clearTime=Button $settingsCard '清空列表' 571 110 148
-$saveButton=Button $settingsCard '保存并启用' 415 167 160 $true;$disableButton=Button $settingsCard '停用定时' 591 167 128
-$consumeButton=Button $schedulePage '立即消耗一次' 20 352 173 $true;$null=Label $schedulePage '对可用账号执行一次；没有额度的跳过。与自动消耗协调，未知结果不重试。' 212 357 752 41 10 $false 'muted'
-$null=Label $schedulePage '定时与手动执行日志' 20 403 930 26 11 $true
-$scheduleLog=New-DashboardLogBox $schedulePage 20 435 947 106
-$followSchedule=New-Object Windows.Forms.CheckBox;$followSchedule.Text='自动跟随';$followSchedule.Checked=$true;$followSchedule.Location=New-Object Drawing.Point(680,403);$followSchedule.Size=New-Object Drawing.Size(112,25);$schedulePage.Controls.Add($followSchedule)
-$latestSchedule=Button $schedulePage '最新消息 ↓' 811 399 156
-$latestSchedule.Add_Click({$followSchedule.Checked=$true;$scheduleLog.SelectionStart=$scheduleLog.TextLength;$scheduleLog.SelectionLength=0;$scheduleLog.ScrollToCaret()})
-$overview.Add_Resize({Resize-DashboardLogBox $overview $eventsBox $latestEvents $followEvents})
-$schedulePage.Add_Resize({Resize-DashboardLogBox $schedulePage $scheduleLog $latestSchedule $followSchedule})
-$connection=Label $form 'Codex Switch 读取中…' 24 706 600 22 9 $false 'muted';$connection.Anchor='Bottom,Left'
-$notice=Label $form '' 24 684 850 24 9 $false 'accent';$notice.Anchor='Bottom,Left';$hideButton=Button $form '收回托盘' 890 697 138;$hideButton.Anchor='Bottom,Right'
+. (Join-Path $Here 'lib\dashboard-layout.ps1')
 $startButton.Add_Click({Begin-Command 'start-live'})
 $pauseButton.Add_Click({$s=Read-DashboardJson (Join-Path $Here 'state\tray-status.json');$action=if($s -and $s.paused){'resume'}else{'pause'};$null=Send-DashboardCommand $Here $action -Watcher;Notice '已提交暂停/恢复请求'})
 $stopButton.Add_Click({Begin-Command 'stop'})
@@ -187,21 +164,24 @@ $saveButton.Add_Click({try{Begin-ScheduleAction 'save'}catch{Notice $_.Exception
 $disableButton.Add_Click({try{Begin-ScheduleAction 'disable'}catch{Notice $_.Exception.Message $true}})
 $testButton.Add_Click({try{Begin-ScheduleAction 'test'}catch{Notice $_.Exception.Message $true}})
 $consumeButton.Add_Click({if([Windows.Forms.MessageBox]::Show($form,'立即对可用账号消耗一次额度？这会消耗少量 Codex 额度。','确认执行','YesNo','Question') -eq 'Yes'){try{Begin-ScheduleAction 'consume'}catch{Notice $_.Exception.Message $true}}})
-$form.Add_Shown({Resize-DashboardLogBox $overview $eventsBox $latestEvents $followEvents;Resize-DashboardLogBox $schedulePage $scheduleLog $latestSchedule $followSchedule;if($followEvents.Checked){$eventsBox.SelectionStart=$eventsBox.TextLength;$eventsBox.ScrollToCaret()};if(-not $PreviewPath -and -not $SmokeTest){Write-ScheduleJson (Join-Path $Here 'state\dashboard-window.json') @{pid=$PID;handle=$form.Handle.ToInt64();visible=$form.Visible;at=(Get-Date).ToString('o')}}})
+$form.Add_Shown({Resize-DashboardLayout;if($followEvents.Checked){$eventsBox.SelectionStart=$eventsBox.TextLength;$eventsBox.ScrollToCaret()};if(-not $PreviewPath -and -not $SmokeTest){Write-ScheduleJson (Join-Path $Here 'state\dashboard-window.json') @{pid=$PID;handle=$form.Handle.ToInt64();visible=$form.Visible;at=(Get-Date).ToString('o')}}})
 try{
     if($PreviewPath){
-        $script:accounts=@(1..5|ForEach-Object {[pscustomobject]@{id="a$_";email="account$_@example.com";active=($_ -eq 1);usage=@{error=$null;primary=@{remainingPercent=100-$_*12;windowMinutes=300;resetsAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+18000};secondary=@{remainingPercent=100-$_*8;windowMinutes=10080}}}})
-        $script:accounts+=@(1..3|ForEach-Object {[pscustomobject]@{id="r$_";email="reserve$_@example.com";active=$false;usage=@{error=$null;primary=@{remainingPercent=100;windowMinutes=10080};secondary=$null}}})
+        if($PreviewWidth -gt 0 -and $PreviewHeight -gt 0){$form.ClientSize=New-Object Drawing.Size($PreviewWidth,$PreviewHeight)}
+        $form.Show();[Windows.Forms.Application]::DoEvents();Resize-DashboardLayout
+        $script:accounts=@(1..6|ForEach-Object {[pscustomobject]@{id="a$_";email="account$_@example.com";active=($_ -eq 1);usage=@{error=$null;primary=@{remainingPercent=100-$_*15;windowMinutes=300;resetsAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+18000};secondary=@{remainingPercent=100-$_*8;windowMinutes=10080}}}})
+        $script:accounts+=@(1..3|ForEach-Object {[pscustomobject]@{id="r$_";email="reserve$_@example.com";active=$false;usage=@{error=$null;primary=@{remainingPercent=20+$_*25;windowMinutes=10080};secondary=$null}}})
+        if($PreviewMode -ne 'stopped'){$script:uiRun=[pscustomobject]@{reserveRequestedCount=0};$script:displayReservePolicy=[pscustomobject]@{selectedIds=@();knownReserveIds=@('r1','r2','r3')};$startButton.Enabled=$false;$startButton.BackColor=$color.border}
         $script:accountError='';Render-Accounts
-        $statusLabel.Text=$(if($PreviewMode -eq 'paused'){'异常暂停'}elseif($PreviewMode -eq 'stopped'){'尚未启动'}else{'看护运行中'});$elapsedValue.Text='3小时20分';$runDetail.Text='正常模式 · 后台 PID 12345'
+        $statusLabel.Text=$(if($PreviewMode -eq 'paused'){'异常暂停'}elseif($PreviewMode -eq 'stopped'){'尚未启动'}else{'看护运行中'});$elapsedValue.Text='已运行 3小时20分';$runDetail.Text='普通账号优先，备选未启用'
         if($PreviewMode -eq 'stopped'){$elapsedValue.Text='尚未启动';$runDetail.Text='设置备选数量后启动看护';$pauseButton.Enabled=$false;$stopButton.Enabled=$false}
         $eventsBox.Text="10-12 11:30:00 [INFO] 看护已启动`r`n10-12 11:35:21 [OK] 已确认切换到周额度最高的账号`r`n10-12 11:35:33 [OK] 两条中断对话已恢复运行"
-        $scheduleSummary.Text='已启用 · 每天 10:35 · 关闭窗口仍然有效';$scheduleLog.Text="10-12 10:35:00 [INFO] 定时消耗开始`r`n10-12 10:35:12 [INFO] 成功 4 个，跳过 1 个，未确认 0 个"
+        $scheduleLog.Text="11-01 09:07:00 [INFO] 定时消耗开始`r`n11-01 09:07:12 [INFO] 成功 6 个，跳过 3 个，未确认 0 个"
         if($PreviewMode -eq 'schedule'){$tabs.SelectedTab=$schedulePage}
-        if($PreviewMode -eq 'paused'){$pauseReason.Text='异常暂停：会话错误超出现有规则。处理后点击恢复。';$reportButton.Visible=$true}
+        if($PreviewMode -eq 'paused'){$pauseReason.Text='异常暂停：会话错误超出现有规则。处理后点击恢复。';$pauseReason.ForeColor=$color.warning;$statusLabel.ForeColor=$color.warning;$statusLabel.BackColor=[Drawing.ColorTranslator]::FromHtml('#FAEED8');$pauseButton.Text='恢复看护';$reportButton.Visible=$true}
         $form.Show();[Windows.Forms.Application]::DoEvents();$bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height);$form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height)));$bitmap.Save($PreviewPath,[Drawing.Imaging.ImageFormat]::Png);$bitmap.Dispose();$form.Close()
     }else{
         Refresh-UI;$script:timer=New-Object Windows.Forms.Timer;$script:timer.Interval=1000;$script:timer.Add_Tick({if($SmokeTest){$form.Close()}else{Refresh-UI}});$script:timer.Start();[void]$form.ShowDialog()
     }
 }catch{Write-SchedulerEvent ('合并界面异常：'+$_.Exception.ToString()) 'ERROR';throw}
-finally{if($script:timer){$script:timer.Stop();$script:timer.Dispose()};if($script:fetch){$script:fetch.Stop();$script:fetch.Dispose()};$form.Dispose();if($owned){$mutex.ReleaseMutex()};$mutex.Dispose()}
+finally{if($script:timer){$script:timer.Stop();$script:timer.Dispose()};if($script:fetch){$script:fetch.Stop();$script:fetch.Dispose()};$form.Dispose();$reserveTip.Dispose();$script:ActiveAccountFont.Dispose();if($owned){$mutex.ReleaseMutex()};$mutex.Dispose()}
