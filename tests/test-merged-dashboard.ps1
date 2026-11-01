@@ -18,10 +18,10 @@ try{
  $gui=$gui.Replace('Local\CodexQuotaDashboard','Local\DashboardFixture-'+[guid]::NewGuid().ToString('N')).Replace('function Start-AccountRead{','function Start-AccountRead{ return # isolated fixture'+"`n")
  [IO.File]::WriteAllText((Join-Path $tmp 'dashboard.ps1'),$gui,$enc)
  $stub=@'
-param([switch]$Live,[switch]$DryRun)
+param([switch]$Live,[switch]$DryRun,[int]$ReserveAccountCount=0)
 $at=(Get-Date).ToString('o');$file=Join-Path $PSScriptRoot 'logs\events-fixture.log'
 [IO.File]::WriteAllText($file,"本轮事件 FIRST_EVENT`r`n",(New-Object Text.UTF8Encoding($true)))
-@{id=[guid]::NewGuid().ToString('N');pid=$PID;startedAt=$at;processStartedAt=(Get-Process -Id $PID).StartTime.ToString('o');eventFile=$file;mode='正常模式'}|ConvertTo-Json|Set-Content (Join-Path $PSScriptRoot 'state\current-run.json') -Encoding UTF8
+@{id=[guid]::NewGuid().ToString('N');pid=$PID;startedAt=$at;processStartedAt=(Get-Process -Id $PID).StartTime.ToString('o');eventFile=$file;mode='正常模式';reserveRequestedCount=$ReserveAccountCount}|ConvertTo-Json|Set-Content (Join-Path $PSScriptRoot 'state\current-run.json') -Encoding UTF8
 @{pid=$PID;paused=$true;at=$at}|ConvertTo-Json|Set-Content (Join-Path $PSScriptRoot 'state\tray-status.json') -Encoding UTF8
 while($true){Start-Sleep -Milliseconds 200}
 '@
@@ -30,9 +30,10 @@ while($true){Start-Sleep -Milliseconds 200}
  Wait-For { @(Procs 'dashboard.ps1').Count -eq 1 }
  Check 'opening merged app never automatically starts watcher' (@(Procs 'codex-autopilot.ps1').Count -eq 0)
  . (Join-Path $tmp 'lib\dashboard.ps1')
- $null=Send-DashboardCommand $tmp 'start-live';Wait-For {Get-DashboardRun $tmp}
+ $null=Send-DashboardCommand $tmp 'start-live' -Options @{reserveCount=1};Wait-For {Get-DashboardRun $tmp}
  $first=Get-DashboardRun $tmp
  Check 'explicit normal start launches one isolated watcher' ($first.mode -eq '正常模式' -and @(Procs 'codex-autopilot.ps1').Count -eq 1)
+ Check 'per-run reserve count reaches the watcher process' ($first.reserveRequestedCount -eq 1)
  $null=Send-DashboardCommand $tmp 'start-live';Start-Sleep -Milliseconds 700
  Check 'second start attaches without duplicate watcher' (@(Procs 'codex-autopilot.ps1').Count -eq 1 -and (Get-DashboardRun $tmp).pid -eq $first.pid)
  Check 'elapsed time is derived from same run' ((Format-DashboardElapsed $first ([datetime]::Parse($first.startedAt).AddMinutes(3))) -match '3分')

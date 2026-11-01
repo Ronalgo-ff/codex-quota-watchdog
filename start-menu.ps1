@@ -63,7 +63,7 @@ function Get-TrayProcs {
 }
 
 function Send-TrayHostCommand {
-    param([ValidateSet('start-live','start-dry','stop')][string]$Command)
+    param([ValidateSet('start-live','stop')][string]$Command)
     $dir = Split-Path $HostCommandF -Parent
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $json = @{ id = [guid]::NewGuid().ToString('N'); action = $Command; at = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
@@ -174,8 +174,8 @@ function Start-Autopilot {
         Read-Host '  回车返回' | Out-Null; return
     }
     $shellExe = (Get-Process -Id $PID).Path
-    if (@(Get-TrayProcs).Count -gt 0) {
-        $command = if ($Live) { 'start-live' } else { 'start-dry' }
+    if ($Live -and @(Get-TrayProcs).Count -gt 0) {
+        $command = 'start-live'
         Send-TrayHostCommand -Command $command
         Write-Host '  已把启动请求交给托盘；关闭本窗口不会影响后台看护。' -ForegroundColor Green
         $deadline = (Get-Date).AddSeconds(5)
@@ -253,7 +253,6 @@ while ($true) {
         Write-Host '     当前状态：未运行' -ForegroundColor DarkGray
     }
     Write-Host ''
-    Write-Host '     [1]  演习模式     只判断，不动任何东西（第一次请先跑这个）' -ForegroundColor White
     Write-Host '     [2]  正式运行     会真的切号 + 重启 Codex + 发"继续"' -ForegroundColor White
     Write-Host '     [3]  停止         结束所有看护进程' -ForegroundColor White
     Write-Host '     [4]  查看状态     进程 / 接口 / 最近报告' -ForegroundColor White
@@ -264,7 +263,6 @@ while ($true) {
     $ch = Read-Host '  请输入编号并回车'
 
     switch ($ch) {
-        '1' { Start-Autopilot }
         '2' { Start-Autopilot -Live }
         '3' { Stop-Autopilot }
         '4' { Show-Status }

@@ -9,6 +9,7 @@ function Check($Name,$Ok) { if ($Ok) { $script:pass++; Write-Host "[PASS] $Name"
 $enc = New-Object Text.UTF8Encoding($true)
 $caller = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 try {
+    Copy-Item (Join-Path $root 'lib\account-quota.ps1') (Join-Path $tmp 'lib\account-quota.ps1')
     $text = Get-Content (Join-Path $root 'setup.ps1') -Raw -Encoding UTF8
     $fixture = @'
 function Invoke-SetupRead([string]$Endpoint,[string]$Command) {
@@ -27,7 +28,7 @@ function Invoke-DesktopTool($Tool,$Arguments) { return [pscustomobject]@{thread=
     Set-Content (Join-Path $tmp 'count.txt') '2'
     $result = & $setup -NoShortcut -CallerThreadId $caller
     $local = Get-Content $configPath -Raw | ConvertFrom-Json
-    Check 'first launch discovers actual account count and local caller' ($local.ExpectedAccounts -eq 2 -and $local.DesktopCallerThreadId -eq $caller -and $result.ready)
+    Check 'first launch discovers actual accounts without pinning a count' (-not $local.PSObject.Properties['ExpectedAccounts'] -and $result.accounts -eq 2 -and $local.DesktopCallerThreadId -eq $caller -and $result.ready)
     Check 'bootstrap discovers the local session directory' ($local.SessionRoot -eq (Join-Path $tmp 'home\sessions'))
     $local | Add-Member NoteProperty ResumeMessage 'custom-resume'
     [IO.File]::WriteAllText($configPath,($local | ConvertTo-Json),$enc)
@@ -37,10 +38,28 @@ function Invoke-DesktopTool($Tool,$Arguments) { return [pscustomobject]@{thread=
     $null = & $setup -CheckOnly -NoShortcut
     Check 'health check does not rewrite configuration' ((Get-FileHash $configPath).Hash -eq $before)
     Set-Content (Join-Path $tmp 'count.txt') '3'
-    $threw = $false; try { $null = & $setup -NoShortcut } catch { $threw = $_.Exception.Message -match 'RefreshAccounts' }
-    Check 'changed account count blocks startup and preserves baseline' ($threw -and (Get-FileHash $configPath).Hash -eq $before)
-    $null = & $setup -NoShortcut -RefreshAccounts
-    Check 'explicit account refresh updates baseline without clearing runtime state' ((Get-Content $configPath -Raw | ConvertFrom-Json).ExpectedAccounts -eq 3 -and (Test-Path (Join-Path $tmp 'state')))
+    $result = & $setup -NoShortcut
+    Check 'added accounts are discovered without blocking launch' ($result.ready -and $result.accounts -eq 3)
+    $local = Get-Content $configPath -Raw | ConvertFrom-Json
+    $local | Add-Member NoteProperty ExpectedAccounts 6 -Force
+    [IO.File]::WriteAllText($configPath,($local | ConvertTo-Json),$enc)
+    $pausePath=Join-Path $tmp 'state\manual-pause.json'
+    $pause=@{active=$true;key='loop:预期 6 个账号，实际读取 7 个；等待完整数据';reportPath='old-report.json'}
+    [IO.File]::WriteAllText($pausePath,($pause|ConvertTo-Json),$enc)
+    [IO.File]::WriteAllText((Join-Path $tmp 'state\handled.json'),'preserved-state',$enc)
+    $before=(Get-FileHash $configPath).Hash
+    $result=& $setup -CheckOnly -NoShortcut
+    Check 'health check tolerates legacy count without rewriting config or pause' ($result.ready -and (Get-FileHash $configPath).Hash -eq $before -and (Get-Content $pausePath -Raw|ConvertFrom-Json).active)
+    Set-Content (Join-Path $tmp 'count.txt') '1'
+    $result = & $setup -NoShortcut -RefreshAccounts
+    $resolved=Get-Content $pausePath -Raw|ConvertFrom-Json
+    Check 'removed accounts and legacy refresh argument are supported' ($result.ready -and $result.accounts -eq 1 -and -not (Get-Content $configPath -Raw|ConvertFrom-Json).PSObject.Properties['ExpectedAccounts'])
+    Check 'only obsolete account-count pause is resolved with original evidence' (-not $resolved.active -and $resolved.action -eq 'account-sync-upgrade' -and $resolved.previous.key -eq $pause.key -and (Get-Content (Join-Path $tmp 'state\handled.json') -Raw).Trim() -eq 'preserved-state')
+    $pause.key='switch:uncertain'
+    [IO.File]::WriteAllText($pausePath,($pause|ConvertTo-Json),$enc)
+    $before=(Get-FileHash $pausePath).Hash
+    $null=& $setup -NoShortcut
+    Check 'unrelated uncertain-operation pause remains unchanged' ((Get-FileHash $pausePath).Hash -eq $before)
     [IO.File]::WriteAllText($configPath,'{invalid',$enc)
     $threw = $false; try { $null = & $setup -NoShortcut } catch { $threw = $true }
     Check 'corrupt machine configuration fails instead of using another machine defaults' $threw

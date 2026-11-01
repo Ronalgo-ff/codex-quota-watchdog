@@ -18,7 +18,7 @@ function Get-RecoveryPolicy {
     if($Message -match '(?i)桌面通道不可用|桌面本地会话状态暂不可用|Desktop pipe|无法连接到远程服务器|无法解析此远程名称|连接超时|连接被拒绝|connection refused|connection reset|name resolution|network is unreachable|timed? out|timeout|超时|\b(408|429|502|503|504)\b|Codex Switch 未返回账号'){
         return 'wait-service'
     }
-    if($Message -match '实际读取.+等待完整数据') {return 'wait-account-set'}
+    if($Message -match '账号身份数据不完整') {return 'wait-account-set'}
     if($Message -match '没有唯一当前账号|当前账号额度数据未知') {return 'wait-data'}
     return 'unknown'
 }
@@ -313,8 +313,10 @@ function Get-ResumeAccountProof {
         return $null
     }
     $active=@($accounts|Where-Object {$_.Active})
-    if($accounts.Count -ne $Script:Config.ExpectedAccounts -or $active.Count -ne 1){return $null}
+    if(-not (Test-AccountIdentities $accounts) -or $active.Count -ne 1){return $null}
     $a=$active[0]
+    $enabled=@(Get-RunAccounts $State $accounts)
+    if($a.Id -notin @($enabled|ForEach-Object {$_.Id})){return $null}
     if(-not (Test-AccountQuotaAvailable $a)){
         Write-Transition 'resume-quota-check' '续跑前复查发现当前账号无可用额度或数据未知；不发送继续，交回切号/等待流程' 'WARN'
         return $null
@@ -389,6 +391,8 @@ function Start-QuotaBatch {
     $null=New-Item -ItemType Directory -Path $dir -Force
     $job=Join-Path $dir ($id+'.json')
     $batch=[ordered]@{id=$id;source='watcher-reset';coordinationDir=(Join-Path $Script:Config.StateDir 'quota-coordination');waitPolicy=$Script:Config.ResetWaitPolicy;endpoint=$Script:Config.CswEndpoint;startedAt=(Get-Date).ToString('o');phase='prepared';accounts=@($Accounts|ForEach-Object {@{id=$_.Id;phase='pending';error=$null}})}
+    $policy=Get-StateFlag $State 'runAccountPolicy'
+    if($policy){$batch['reservePolicy']=$policy}
     Write-JsonAtomic $job $batch
     Set-StateFlag $wait 'phase' 'running';Set-StateFlag $wait 'batchFile' $job;Save-State $State
     . (Join-Path $PSScriptRoot 'process.ps1')
@@ -409,8 +413,8 @@ function Invoke-ResetCycle {
     if(-not $wait -and $ready.Count -gt 0){return 'none'}
     $weeklyTargets=@($Accounts|Where-Object {$null -ne $_.Weekly -and $_.Weekly -gt 0 -and -not $_.UsageError})
     $unknown=@($Accounts|Where-Object {$_.UsageError -or $null -eq $_.Weekly -or ($null -eq $_.FiveHour -and -not (Get-QuotaProperty $_ 'FiveHourLimitAbsent') -and (-not $weeklyOnly -or $_.Weekly -gt 0))})
-    if($Accounts.Count -ne $Script:Config.ExpectedAccounts -or ($unknown.Count -gt 0 -and (-not $wait -or (($waitAll -or $weeklyOnly) -and $wait.phase -eq 'waiting')))){
-        Write-Transition 'reset-unknown' '账号数量或额度数据不完整，等待重新读取；不会批量消耗'
+    if(-not (Test-AccountIdentities $Accounts) -or ($unknown.Count -gt 0 -and (-not $wait -or (($waitAll -or $weeklyOnly) -and $wait.phase -eq 'waiting')))){
+        Write-Transition 'reset-unknown' '账号身份或额度数据不完整，等待重新读取；不会批量消耗'
         return 'waiting'
     }
     if(-not $wait){
@@ -422,9 +426,16 @@ function Invoke-ResetCycle {
         else{Write-Event '全部账号均不可用；持续监控，有账号恢复可用即尝试消耗并恢复调度' 'WARN'}
         return 'waiting'
     }
-    if((@($wait.accountIds|Sort-Object)-join ',') -ne (@($Accounts.Id|Sort-Object)-join ',')){
-        Request-ManualPause $State 'reset-accounts-changed' '等待期间账号集合改变，已冻结批量消耗' $wait
-        return 'waiting'
+    $membershipChanged=-not (Test-SameAccountIds $wait.accountIds $Accounts.Id)
+    if($membershipChanged -and $wait.phase -in @('waiting','success')){
+        Set-StateFlag $wait 'accountIds' @($Accounts.Id)
+        if($wait.phase -eq 'waiting'){
+            $plan=Get-WaitPlan $Accounts 'all'
+            Set-StateFlag $wait 'wakeAt' $plan.WakeAt.ToString('o')
+            Clear-StateFlag $wait 'eligibleIds'
+        }
+        Save-State $State
+        Write-Transition 'reset-account-sync' "账号列表已更新为 $($Accounts.Count) 个，已重新检查等待范围" 'INFO'
     }
     if($wait.phase -in @('running','failed')){
         $jobPath=Get-StateFlag $wait 'batchFile'
@@ -433,15 +444,16 @@ function Invoke-ResetCycle {
             return 'waiting'
         }
         $batch=Get-Content -LiteralPath $jobPath -Raw -Encoding UTF8|ConvertFrom-Json
-        if($batch.phase -eq 'preflight-retry' -and @($batch.accounts).Count -eq $Accounts.Count -and
-            (@($batch.accounts.id|Sort-Object)-join ',') -eq (@($Accounts.Id|Sort-Object)-join ',') -and
+        if($batch.phase -eq 'preflight-retry' -and
             @($batch.accounts|Where-Object {$_.phase -ne 'pending'}).Count -eq 0){
+            Set-StateFlag $wait 'accountIds' @($Accounts.Id)
             $wait.phase='waiting';Set-StateFlag $wait 'wakeAt' ((Get-Date).AddSeconds(60).ToString('o'));Set-StateFlag $wait 'retryAfter' $wait.wakeAt
             Clear-StateFlag $wait 'batchFile';Save-State $State
             Write-Transition 'batch-preflight-retry' '消耗前读取账号暂时失败，尚未发送消耗请求；60 秒后重新检查全部账号'
             return 'waiting'
         }
         if($batch.phase -eq 'not-ready' -and @($batch.accounts|Where-Object {$_.phase -ne 'pending'}).Count -eq 0){
+            Set-StateFlag $wait 'accountIds' @($Accounts.Id)
             $plan=Get-WaitPlan $Accounts 'all'
             $wait.phase='waiting';$wait.wakeAt=$plan.WakeAt.ToString('o');Set-StateFlag $wait 'retryAfter' ((Get-Date).AddSeconds(60).ToString('o'))
             Clear-StateFlag $wait 'batchFile';Save-State $State
@@ -456,13 +468,18 @@ function Invoke-ResetCycle {
         $receipts=@($batch.accounts)
         $successes=@($receipts|Where-Object {$_.phase -eq 'success'})
         if($successes.Count -gt 0){
-            if($receipts.Count -ne $Accounts.Count -or
-                (@($receipts|ForEach-Object {$_.id}|Sort-Object)-join ',') -ne (@($Accounts.Id|Sort-Object)-join ',')){
+            if(-not (Test-AccountIdentities $receipts) -or -not (Test-SameAccountIds $receipts.id $wait.accountIds)){
                 Request-ManualPause $State ('batch-invalid:'+ $batch.id) '批量消耗账号回执不匹配，不能确认本批结果' $batch
                 return 'waiting'
             }
             $usableSuccess=@($ready|Where-Object {$_.Id -in @($successes.id) -and $_.FiveHourReset -gt [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()})
             if($usableSuccess.Count -eq 0){
+                if($membershipChanged){
+                    # The old cohort has finished. Its receipts and shared journal
+                    # remain on disk; removed accounts do not block the new roster.
+                    Clear-StateFlag $State 'waitingReset';Save-State $State
+                    return (Invoke-ResetCycle $State $Accounts)
+                }
                 Write-Transition 'timer-verify' '已有消耗成功回执，等待至少一个成功账号的可用额度与五小时计时确认；不重复消耗'
                 return 'waiting'
             }
@@ -541,8 +558,8 @@ function Confirm-SupersededSwitchIntent {
     if(([DateTimeOffset]::Now-$sent).TotalSeconds -lt [Math]::Max(1,[int]$Script:Config.SwitchVerifySec)){return $false}
     $confirmed=@(Get-Accounts)
     $active=@($confirmed|Where-Object Active)
-    if($confirmed.Count -ne $Script:Config.ExpectedAccounts -or $active.Count -ne 1 -or $active[0].Id -ne $Current.Id){return $false}
-    if(@($confirmed|Where-Object {$_.Id -notin @($Accounts.Id)}).Count -gt 0 -or @($confirmed.Id|Select-Object -Unique).Count -ne $confirmed.Count){return $false}
+    if(-not (Test-AccountIdentities $confirmed) -or $active.Count -ne 1 -or $active[0].Id -ne $Current.Id){return $false}
+    if(-not (Test-SameAccountIds $confirmed.Id $Accounts.Id)){return $false}
     $a=$active[0]
     if(-not (Test-AccountQuotaAvailable $a)){return $false}
     $history=Get-StateFlag $State 'switchHistory'
@@ -561,13 +578,20 @@ function Confirm-SupersededSwitchIntent {
 function Invoke-WatchRound {
     param($State)
     Initialize-V2State $State
-    $accounts=@(Get-Accounts)
+    $allAccounts=@(Get-Accounts)
+    if($allAccounts.Count -eq 0){throw 'Codex Switch 未返回账号'}
+    if(-not (Test-AccountIdentities $allAccounts)){throw 'Codex Switch 账号身份数据不完整，等待重新读取'}
+    $active=@($allAccounts|Where-Object {$_.Active})
+    if($active.Count -ne 1){throw 'Codex Switch 没有唯一当前账号'}
+    $accounts=@(Get-RunAccounts $State $allAccounts)
     # Publish even while waiting for all resets or while the desktop is unavailable.
     # A display snapshot never writes events and cannot initiate account operations.
-    $displayActive=@($accounts|Where-Object {$_.Active})
+    $displayActive=$active
     $quotaFile=Join-Path $Script:Config.StateDir $(if($Live){'quota-status.json'}else{'quota-status.dry-run.json'})
     Write-JsonAtomic $quotaFile @{
         pid=$PID;at=(Get-Date).ToString('o');pollSeconds=$Script:Config.PollSeconds
+        accountCount=$allAccounts.Count;watchAccountCount=$accounts.Count
+        reservePolicy=(Get-StateFlag $State 'runAccountPolicy')
         account=$(if($displayActive.Count -eq 1){$displayActive[0]|Select-Object Id,FiveHour,Weekly,FiveHourLimitAbsent,UsageError}else{$null})
         waitingReset=(Get-StateFlag $State 'waitingReset')
         weeklyEligibleAccounts=@($accounts|Where-Object {-not $_.UsageError -and $null -ne $_.Weekly -and $_.Weekly -gt 0}).Count
@@ -575,15 +599,12 @@ function Invoke-WatchRound {
         resetWaitPolicy=$Script:Config.ResetWaitPolicy
         usableAccounts=@($accounts|Where-Object {Test-AccountQuotaAvailable $_}).Count
     }
-    if($accounts.Count -eq 0){throw 'Codex Switch 未返回账号'}
-    if($accounts.Count -ne $Script:Config.ExpectedAccounts){throw "预期 $($Script:Config.ExpectedAccounts) 个账号，实际读取 $($accounts.Count) 个；等待完整数据"}
+    if($accounts.Count -eq 0){Write-Transition 'no-enabled-accounts' '本次没有可参与看护的账号，等待普通账号加入或停止后重新选择备选数量';return}
     $cycle=Invoke-ResetCycle $State $accounts
     if($cycle -eq 'waiting'){return}
-    $active=@($accounts|Where-Object {$_.Active})
-    if($active.Count -ne 1){throw 'Codex Switch 没有唯一当前账号'}
     $a=$active[0]
     # An incomplete quota snapshot is not a zero balance.
-    if(-not (Test-AccountQuotaKnown $a)){throw '当前账号额度数据未知'}
+    if($a.Id -in @($accounts.Id) -and -not (Test-AccountQuotaKnown $a)){throw '当前账号额度数据未知'}
     # Reconcile before reading the desktop, which may still be closed.
     $restartIntent=Get-StateFlag $State 'switchIntent'
     if($restartIntent -and $restartIntent.targetId -eq $a.Id){Set-CodexDesktopRecovery $State $restartIntent}
@@ -612,7 +633,7 @@ function Invoke-WatchRound {
     $hits=@($recent|Where-Object {$_.Outcome -eq 'limit'})
     $freshHits=@($hits|Where-Object {-not $State.switchIncidents.PSObject.Properties[($_.Id+':'+$_.TurnId)] -and
         -not (Test-LegacyIncidentHandled $State $_)})
-    $dry=-not (Test-AccountQuotaAvailable $a)
+    $dry=$a.Id -notin @($accounts.Id) -or -not (Test-AccountQuotaAvailable $a)
     $mustSwitch=$dry -or $freshHits.Count -gt 0 -or $cycle -eq 'recovered'
     $intent=Get-StateFlag $State 'switchIntent'
     if($intent){
@@ -622,7 +643,7 @@ function Invoke-WatchRound {
             Set-StateFlag $State 'desktopReadyAfter' ((Get-Date).AddSeconds([int]$Script:Config.DesktopReadyDelaySec).ToString('o'));Save-State $State
             Write-Event "切号已核实生效：$($a.Email)" 'OK'
             $mustSwitch=$dry
-        }elseif(Confirm-SupersededSwitchIntent $State $intent $a $accounts){
+        }elseif(Confirm-SupersededSwitchIntent $State $intent $a $allAccounts){
             $mustSwitch=$dry -or @($freshHits|Where-Object {-not $State.switchIncidents.PSObject.Properties[($_.Id+':'+$_.TurnId)]}).Count -gt 0 -or $cycle -eq 'recovered'
         }else{
             Request-ManualPause $State ('switch:'+ $intent.id) '切号结果未确认；不重复发送重启命令' $intent
@@ -662,6 +683,11 @@ function Invoke-WatchRound {
             return
         }
         $best=(Select-BestAccount $candidates).Best
+        if($best -and (Get-QuotaProperty $best 'FiveHourLimitAbsent') -and
+            @($accounts|Where-Object {-not (Get-QuotaProperty $_ 'FiveHourLimitAbsent') -and -not (Test-AccountQuotaKnown $_)}).Count -gt 0){
+            Write-Transition 'reserve-await-ordinary' '普通账号额度尚未全部确认，暂不启用备选账号'
+            return
+        }
         # Compare the same priority tiers after reset, including the current account.
         if($cycle -eq 'recovered' -and -not $dry -and (-not $best -or @(Sort-QuotaAccounts @($a,$best) $Script:Config.FallbackAccountIds)[0].Id -eq $a.Id)){$best=$null;$mustSwitch=$false}
         if(-not $best -and $mustSwitch){Write-Transition 'no-switchable' '额度不足，暂时没有可切账号；继续等待';return}
@@ -743,7 +769,7 @@ function Start-WatchLoop {
             # Read-only transport outages need no manual acknowledgement. Each failed
             # round has already stopped before account switching or continuation.
             # Missing active-account/quota data is read-only: keep checking until
-            # it recovers. A persistent account-count change still needs review.
+            # it recovers. Persistent malformed identities still need review.
             $dataExpired=$policy -eq 'wait-account-set' -and $dataFailureSince -and ((Get-Date)-$dataFailureSince).TotalMinutes -ge 5
             if($policy -eq 'unknown' -or ($dataExpired -and -not $recovering)){
                 try{Request-ManualPause $State ('loop:'+ $message) '看护本轮异常' @{error=$message;stack=$_.ScriptStackTrace}}catch{if($_.Exception.Data['QuotaManualPause'] -ne $true){throw}}

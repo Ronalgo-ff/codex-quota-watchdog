@@ -26,7 +26,7 @@ try {
     Copy-Item (Join-Path $root 'codex-autopilot.ps1') (Join-Path $tmp 'watcher-library.ps1')
     Copy-Item (Join-Path $root 'lib') (Join-Path $tmp 'lib') -Recurse
     $stub=@'
-param([switch]$Live,[switch]$DryRun)
+param([switch]$Live,[switch]$DryRun,[int]$ReserveAccountCount=0)
 . (Join-Path $PSScriptRoot 'watcher-library.ps1') -LibraryOnly -Live:$Live
 Initialize-Paths
 Initialize-TrayControl
@@ -81,17 +81,21 @@ while((Get-Date) -lt $deadline) {
     Check 'incomplete UTF8 event waits for newline' (@(Read-NewLogLines $partial).Count -eq 0 -and $script:Offset -eq 0)
     [IO.File]::WriteAllBytes($partial,$bytes)
     Check 'completed UTF8 event is read intact once' ((@(Read-NewLogLines $partial)-join '') -eq '中文完整行' -and @(Read-NewLogLines $partial).Count -eq 0)
-    # Stop and return to menu, then launch a distinct dry run.
+    # Stop and return to menu, then launch a fresh normal run.
     $script:PendingCommand=$null
     Invoke-MonitorKey 'S' 6>$null
     Wait-For { $null -eq (Get-MonitorRun) }
-    $null=Update-Monitor 6>$null
+    # Process exit precedes the tray acknowledgement. Wait for the actual UI
+    # transition rather than assuming both events occur in the same timer tick.
+    Wait-For { $null=Update-Monitor 6>$null; $script:View -eq 'menu' }
     Check 'stop returns to mode selection' ($script:View -eq 'menu')
     Invoke-MonitorKey 'D1' 6>$null
+    Check 'removed dry-run key does not launch a watcher' ($null -eq (Get-MonitorRun))
+    Invoke-MonitorKey 'D2' 6>$null
     Wait-For { $null -ne (Get-MonitorRun) }
     $second=Get-MonitorRun
     $newDisplay=(Update-Monitor 6>&1|Out-String)
-    Check 'new mode starts fresh without events from previous run' ($second.mode -eq '演习模式' -and $second.id -ne $first.id -and $newDisplay -notmatch 'FIRST_EVENT|CLOSED_WINDOW_EVENT')
+    Check 'new run starts fresh without events from previous run' ($second.mode -eq '正常模式' -and $second.id -ne $first.id -and $newDisplay -notmatch 'FIRST_EVENT|CLOSED_WINDOW_EVENT')
     $testCompleted=$true
 } finally {
     foreach($leaf in @('monitor.ps1','codex-autopilot.ps1','tray.ps1')){

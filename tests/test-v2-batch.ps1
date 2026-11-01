@@ -13,6 +13,12 @@ function Invoke-RestMethod {
     if($r.command -eq 'list_accounts'){
         if((Get-Content (Join-Path $PSScriptRoot 'mode.txt') -Raw).Trim() -eq 'preflight-offline'){throw 'connection timeout before any consume request'}
         $mode=(Get-Content (Join-Path $PSScriptRoot 'mode.txt') -Raw).Trim()
+        if($mode -eq 'reserve-policy'){
+            $items=@(1..5|ForEach-Object {@{id="a$_";usage=@{primary=@{remainingPercent=100;windowMinutes=300};secondary=@{remainingPercent=50;windowMinutes=10080};error=$null}}})
+            $items+=@(6..7|ForEach-Object {@{id="a$_";usage=@{primary=@{remainingPercent=100;windowMinutes=10080};secondary=$null;error=$null}}})
+            $items+=@{id='a8';usage=@{primary=$null;secondary=$null;error='read unavailable'}}
+            return @{ok=$true;result=$items}
+        }
         if($mode -in @('reserve-ready','reserve-empty','reserve-unknown')){
             $ordinary=@(1..5|ForEach-Object {@{id="a$_";usage=@{primary=@{remainingPercent=100;windowMinutes=300};secondary=@{remainingPercent=50;windowMinutes=10080};error=$null}}})
             $ordinary+=@{id='a6';usage=@{primary=@{remainingPercent=$(if($mode -eq 'reserve-empty'){0}else{100});windowMinutes=$(if($mode -eq 'reserve-unknown'){300}else{10080})};secondary=$null;error=$null}}
@@ -69,6 +75,14 @@ try{
     & powershell -NoProfile -ExecutionPolicy Bypass -File $runner -JobFile $job
     $b=Get-Content $job -Raw|ConvertFrom-Json
     Check 'read-only preflight timeout is retryable without consuming' ($b.phase -eq 'preflight-retry' -and @(Get-Content (Join-Path $tmp 'calls.txt')).Count -eq 10 -and @($b.accounts|Where-Object {$_.phase -eq 'pending'}).Count -eq 5)
+    Set-Content (Join-Path $tmp 'mode.txt') 'success'
+    foreach($count in @(4,6)){
+        $job=Join-Path $tmp ("roster-$count.json")
+        @{id="roster-$count";endpoint='http://fake.invalid';phase='prepared';accounts=@(1..$count|ForEach-Object {@{id="a$_";phase='pending';error=$null}})}|ConvertTo-Json -Depth 8|Set-Content $job -Encoding UTF8
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $runner -JobFile $job
+        $b=Get-Content $job -Raw|ConvertFrom-Json
+        Check ("preflight membership change from $count to 5 can safely replan") ($LASTEXITCODE -eq 0 -and $b.phase -eq 'preflight-retry' -and @($b.accounts|Where-Object {$_.phase -ne 'pending'}).Count -eq 0 -and @(Get-Content (Join-Path $tmp 'calls.txt')).Count -eq 10)
+    }
     Set-Content (Join-Path $tmp 'mode.txt') 'one-ready'
     $job=Join-Path $tmp 'one-ready.json'
     @{id='one-ready';endpoint='http://fake.invalid';phase='prepared';accounts=@(1..5|ForEach-Object {@{id="a$_";phase='pending';error=$null}})}|ConvertTo-Json -Depth 8|Set-Content $job -Encoding UTF8
@@ -102,6 +116,18 @@ try{
         }else{
             Check ($mode+' skips weekly-only account and consumes exactly five ordinary accounts') ($b.phase -eq 'partial' -and $b.accounts[5].phase -eq 'skipped' -and $newCalls.Count -eq 5 -and 'a6' -notin $newCalls)
         }
+    }
+    Set-Content (Join-Path $tmp 'mode.txt') 'reserve-policy'
+    foreach($count in @(0,1)){
+        $job=Join-Path $tmp ("reserve-policy-$count.json")
+        $before=@(Get-Content (Join-Path $tmp 'calls.txt')).Count
+        $ids=@(1..5|ForEach-Object {"a$_"});if($count -gt 0){$ids+='a6'}
+        @{id="reserve-policy-$count";endpoint='http://fake.invalid';phase='prepared';waitPolicy='weekly-eligible';reservePolicy=@{knownReserveIds=@('a6','a7','a8');selectedIds=@(if($count -gt 0){'a6'})};accounts=@($ids|ForEach-Object {@{id=$_;phase='pending';error=$null}})}|ConvertTo-Json -Depth 8|Set-Content $job -Encoding UTF8
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $runner -JobFile $job
+        $b=Get-Content $job -Raw|ConvertFrom-Json
+        $calls=@(Get-Content (Join-Path $tmp 'calls.txt')|Select-Object -Skip $before)
+        Check ("reserve allowance $count keeps real worker scoped to ordinary timers") ($LASTEXITCODE -eq 0 -and $b.phase -in @('success','partial') -and $calls.Count -eq 5 -and @($calls|Where-Object {$_ -in @('a6','a7','a8')}).Count -eq 0)
+        Check ("reserve allowance $count ignores excluded quota outages during preflight") ($b.accounts.Count -eq 5+$count -and @($b.accounts|Where-Object {$_.id -in @('a7','a8')}).Count -eq 0)
     }
 }finally{Remove-TestDirectory $tmp}
 Write-Host "通过 $pass 项，失败 $fail 项"

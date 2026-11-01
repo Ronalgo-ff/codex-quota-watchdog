@@ -50,12 +50,19 @@ try{
     Write-ScheduleJson (Join-Path $guardDir 'last-run.json') @{at=(Get-Date).ToString('o');job=$job;pid=$PID;phase='running';source=$source}
     Write-SchedulerEvent "$source 消耗开始，读取到 $($accounts.Count) 个账号"
     $exe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $preflightRetries=0
     do{
         & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'quota-batch.ps1') -JobFile $job
         $batch=Read-ScheduleJson $job
         # Only a preflight failure with zero intents is retryable.
-        if($RunOnce -and $batch.phase -eq 'preflight-retry' -and @($batch.accounts|Where-Object {$_.phase -ne 'pending'}).Count -eq 0 -and (Get-Date) -lt $deadline){
-            Start-Sleep -Seconds 10;$job=New-ScheduleBatch $accounts $endpoint $source;continue
+        if(($RunOnce -or $preflightRetries -lt 3) -and $batch.phase -eq 'preflight-retry' -and @($batch.accounts|Where-Object {$_.phase -ne 'pending'}).Count -eq 0 -and (Get-Date) -lt $deadline){
+            $preflightRetries++
+            Start-Sleep -Seconds 10
+            $r=Invoke-RestMethod -Uri $endpoint -Method Post -ContentType application/json -Body '{"command":"list_accounts","args":{}}' -TimeoutSec 8 @httpOptions
+            if(-not $r.ok){throw $r.error}
+            $accounts=@($r.result)
+            if($accounts.Count -eq 0){throw '没有读取到账号，本次没有发送消耗请求'}
+            $job=New-ScheduleBatch $accounts $endpoint $source;continue
         }
         break
     }while($true)

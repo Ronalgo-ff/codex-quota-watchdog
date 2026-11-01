@@ -45,7 +45,17 @@ try{
         Save-Batch
         exit 0
     }
-    if((@($actual.id|Sort-Object)-join ',') -ne (@($batch.accounts.id|Sort-Object)-join ',')){throw 'Account set changed before batch'}
+    if(-not (Test-AccountIdentities $actual) -or -not (Test-AccountIdentities $batch.accounts)){throw 'Account identities incomplete before batch'}
+    if($batch.PSObject.Properties['reservePolicy']){
+        $actual=@($actual|Where-Object {
+            $q=ConvertFrom-AccountUsage $_.usage
+            Test-RunAccountEnabled ([pscustomobject]@{id=$_.id;FiveHourLimitAbsent=$q.FiveHourLimitAbsent}) $batch.reservePolicy
+        })
+    }
+    if(-not (Test-SameAccountIds $actual.id $batch.accounts.id)){
+        # Nothing was dispatched: let the caller rebuild against the latest roster.
+        $batch.phase='preflight-retry';Save-Batch;exit 0
+    }
     $quotas=@{}
     foreach($a in $actual){$quotas[$a.id]=ConvertFrom-AccountUsage $a.usage}
     if($batch.waitPolicy -eq 'weekly-eligible'){

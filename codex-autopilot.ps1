@@ -2,10 +2,10 @@
 .SYNOPSIS
     Codex 额度看护脚本 —— 自动切号 + 自动续跑。
 .DESCRIPTION
-    盯着 Codex 的所有对话和 5 个账号的额度：
+    盯着 Codex 的最近对话和本次启用的账号额度：
       · 额度正常时什么都不做，只写日志
       · 某个对话撞上 "usage limit" → 自动切到周额度最多的账号 → 发"继续"
-      · 5 个账号全空 → 持久化等待全部刷新，再逐账号消耗并恢复调度
+      · 本次账号全空 → 持久化等待全部刷新，再逐账号消耗并恢复调度
       · 遇到没预设过的情况 → 保存报告、记录现场，暂停等待人工处理
     生产循环使用 lib/engine-v2.ps1；下方旧 Invoke-Round 保留供历史逻辑回归。
     每做一件事写一行日志，另附一份结构化报告给 AI 读。
@@ -17,6 +17,8 @@
     只检查一轮就退出。默认循环监控。
 .PARAMETER MaxRounds
     循环上限，0 = 不限。
+.PARAMETER ReserveAccountCount
+    本次允许使用的周额度备选数量，默认 0。名单在首次读取时固定，之后不自动补入。
 .EXAMPLE
     .\codex-autopilot.ps1              # 演习，循环
     .\codex-autopilot.ps1 -Once        # 演习，单轮
@@ -28,11 +30,15 @@ param(
     [switch]$Live,
     [switch]$Once,
     [int]$MaxRounds = 0,
+    [int]$ReserveAccountCount = 0,
     [switch]$LibraryOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$Script:WatchRunId = [guid]::NewGuid().ToString('N')
+$Script:ReserveAccountCount = if($PSBoundParameters.ContainsKey('ReserveAccountCount')){$ReserveAccountCount}else{0}
+if($Script:ReserveAccountCount -lt 0 -or $Script:ReserveAccountCount -gt 2147483){throw '备选账号数量必须为非负整数'}
 
 # ══════════════════════════════════════════════════════════════════
 #  配置
@@ -70,7 +76,6 @@ $Script:Config = @{
     # ── 用什么方式"让对话接着跑" ──
     # desktop 通过桌面自身启动回合，不启动争用会话写入锁的外部 CLI。
     ResumeMode        = 'desktop'
-    ExpectedAccounts  = 5
     FallbackAccountIds = @()    # 最后备用的账号；即使以后新增五小时限制也保留优先级。
     DesktopCallerThreadId = $env:CODEX_THREAD_ID
     ResumeMessage     = '继续'
@@ -235,6 +240,7 @@ function Initialize-Paths {
         id = $runId; pid = $PID; startedAt = $Script:StartedAt.ToString('o')
         processStartedAt = (Get-Process -Id $PID).StartTime.ToString('o')
         mode = $(if ($Live) { '正常模式' } else { '演习模式' }); eventFile = $Script:EventFile
+        reserveRequestedCount = $Script:ReserveAccountCount
     }
     Write-File ("续跑方式 {0}；codex.exe = {1}" -f $Script:Config.ResumeMode, $(if ($Script:CodexExe) { $Script:CodexExe } else { '(没找到，需要修复后才能续跑)' }))
     $Script:StatusActive = $false
@@ -932,16 +938,18 @@ function Invoke-Csw {
 
 function Get-Accounts {
     $acc = Invoke-Csw -Command 'list_accounts'
+    if ($null -eq $acc) { return @() }
+    if (@($acc).Count -gt 0 -and -not (Test-AccountIdentities $acc)) { throw 'Codex Switch 账号身份数据不完整，等待重新读取' }
     $out = @()
     foreach ($a in @($acc)) {
         $usage = Get-StateFlag $a 'usage'
         $quota = ConvertFrom-AccountUsage $usage
         $out += [pscustomobject]@{
-            Id            = $a.id
-            Email         = $a.email
-            Plan          = $a.plan
-            Active        = [bool]$a.active
-            Switchable    = [bool]$a.directSwitchCompatible
+            Id            = Get-QuotaProperty $a 'id'
+            Email         = Get-QuotaProperty $a 'email'
+            Plan          = Get-QuotaProperty $a 'plan'
+            Active        = [bool](Get-QuotaProperty $a 'active')
+            Switchable    = [bool](Get-QuotaProperty $a 'directSwitchCompatible')
             FiveHour      = $quota.FiveHour
             Weekly        = $quota.Weekly
             FiveHourLimitAbsent = $quota.FiveHourLimitAbsent
@@ -2300,6 +2308,7 @@ function Wait-Until {
 }
 
 . (Join-Path $PSScriptRoot 'lib\account-quota.ps1')
+. (Join-Path $PSScriptRoot 'lib\run-accounts.ps1')
 . (Join-Path $PSScriptRoot 'lib\desktop.ps1')
 . (Join-Path $PSScriptRoot 'lib\desktop-restart.ps1')
 . (Join-Path $PSScriptRoot 'lib\manual-pause.ps1')

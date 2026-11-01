@@ -93,12 +93,12 @@ public static class QuotaMonitorWindow {
     }
 
     function Start-Watcher {
-        param([switch]$Live)
+        param([switch]$Live,[ValidateRange(0,2147483)][int]$ReserveAccountCount=0)
         if (@(Get-Watchers).Count -gt 0) { return }
         if (-not (Test-Path -LiteralPath $WatcherFile)) { throw "找不到看护脚本：$WatcherFile" }
         if (-not (Test-Csw)) { throw 'Codex Switch 尚未运行，请先启动它' }
         $mode = if ($Live) { '-Live' } else { '-DryRun' }
-        $args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" {1}' -f $WatcherFile, $mode
+        $args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" {1} -ReserveAccountCount {2}' -f $WatcherFile, $mode, $ReserveAccountCount
         $p = Start-QuotaHiddenProcess -Arguments $args
         Write-TrayLog "启动 $mode 看护 PID=$($p.Id)"
         $deadline=(Get-Date).AddSeconds(5)
@@ -172,8 +172,11 @@ public static class QuotaMonitorWindow {
             if (-not $id -or $id -eq $script:LastHostCommandId) { return }
             $script:LastHostCommandId = $id
             switch ([string]$command.action) {
-                'start-live' { Start-Watcher -Live }
-                'start-dry'  { Start-Watcher }
+                'start-live' {
+                    $reserveCount=0
+                    if($command.PSObject.Properties['options'] -and $command.options.PSObject.Properties['reserveCount']){$reserveCount=[int]$command.options.reserveCount}
+                    Start-Watcher -Live -ReserveAccountCount $reserveCount
+                }
                 'stop'       { Stop-Watcher }
                 'show'       { Show-Monitor }
                 default      { throw '无法识别的控制命令' }

@@ -53,6 +53,5 @@
     "usage_limit_reached",
     "purchase more credits"
   ],
-  "ExpectedAccounts": 5,
   "ResetWaitPolicy": "weekly-eligible"
 }

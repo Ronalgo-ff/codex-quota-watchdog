@@ -142,7 +142,6 @@ function Show-Menu {
     Write-Host '     Codex 额度看护  -  主菜单' -ForegroundColor Cyan
     Write-Host '  ==========================================================' -ForegroundColor Cyan
     Write-Host ''
-    Write-Host '     [1] 演习模式    只检查，不切号、不发送继续' -ForegroundColor White
     Write-Host '     [2] 正常模式    自动看护、切号和继续任务' -ForegroundColor White
     Write-Host '     [0] 收回托盘' -ForegroundColor White
     Write-Host ''
@@ -210,8 +209,8 @@ function Invoke-MonitorKey {
     Clear-MonitorFooter
     if ($Key -in @('Q','Escape','D0','NumPad0')) { return 'close' }
     $run=Get-MonitorRun
-    if ($Key -in @('D1','NumPad1','D2','NumPad2') -and -not $run -and -not $script:PendingCommand) {
-        $action=if($Key -in @('D2','NumPad2')){'start-live'}else{'start-dry'}
+    if ($Key -in @('D2','NumPad2') -and -not $run -and -not $script:PendingCommand) {
+        $action='start-live'
         $script:PendingCommand=Send-JsonCommand $HostCommandFile $action
         $script:PendingAt=Get-Date
         Write-Host '  正在启动…' -ForegroundColor Yellow
@@ -241,7 +240,7 @@ function Update-Monitor {
         Clear-MonitorFooter
         foreach($line in @(Read-NewLogLines $script:ShownRun.eventFile)){ Write-EventLine $line }
         $script:View='ended'
-        Write-Host "`n  本次看护已结束。[M] 返回菜单；[1/2] 重新选择模式。" -ForegroundColor Yellow
+        Write-Host "`n  本次看护已结束。[M] 返回菜单；[2] 重新启动看护。" -ForegroundColor Yellow
         try { $Host.UI.RawUI.WindowTitle='Codex 额度看护 - 已结束' } catch { }
     }
     if ($script:PendingCommand) {

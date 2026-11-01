@@ -7,6 +7,7 @@ $tmp=Join-Path $env:TEMP ('quota-weekly-only-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory $tmp -Force
 $Script:Config.StateDir=$tmp;$Script:StateFile=Join-Path $tmp 'handled.json'
 $Script:Config.ExpectedAccounts=6;$Script:Config.FallbackAccountIds=@('a6');$Live=$true
+$Script:ReserveAccountCount=1 # This suite explicitly enables its weekly-only reserve.
 $script:switches=@();$script:batches=0;$script:pauses=0;$script:events=@()
 $script:snapshot=[pscustomobject]@{Recent=@();Active=@()}
 function Invoke-Csw {param($Command,$Arguments) if($Command -ne 'list_accounts'){throw 'Read-only fixture'};return $script:raw}

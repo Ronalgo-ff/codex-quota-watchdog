@@ -17,7 +17,7 @@ Check 'original console menu remains available' ($console -match 'start-menu.ps1
 Check 'double click opens or restores terminal monitor' ($trayText -match '\$tray\.add_DoubleClick\(\{ Show-Monitor \}\)')
 Check 'watcher is launched without a console' ($trayText -match 'Start-QuotaHiddenProcess -Arguments' -and $trayText -match '\$info.CreateNoWindow=\$true' -and $trayText -match '\$info.UseShellExecute=\$false')
 Check 'right click menu stays minimal' ($trayText -match "ToolStripMenuItem\('打开监控窗口'\)" -and $trayText -match "ToolStripMenuItem\('停止看护并退出'\)" -and $trayText -notmatch "ToolStripMenuItem\('查看日志'\)")
-Check 'monitor tails important events and opens with mode selection' ($monitorText -match '实时日志' -and $monitorText -match 'Read-NewLogLines' -and $monitorText -match '\[1\] 演习' -and $monitorText -match '\[2\] 正常模式')
+Check 'monitor exposes normal watch only and tails important events' ($monitorText -match '实时日志' -and $monitorText -match 'Read-NewLogLines' -and $monitorText -notmatch '\[1\] 演习' -and $monitorText -match '\[2\] 正常模式')
 Check 'closing monitor is explicitly non-destructive' ($monitorText -match '关闭窗口并收回托盘（不会停止看护）')
 Check 'default tray opens unified native dashboard' ($trayText.Contains("`$MonitorFile = Join-Path `$Here 'dashboard.ps1'") -and $trayText -match '\-STA \-ExecutionPolicy' -and $trayText -match 'codex-quota.ico')
 

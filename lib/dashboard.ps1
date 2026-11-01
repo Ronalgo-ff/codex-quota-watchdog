@@ -17,11 +17,11 @@ function Get-DashboardRun($Root){
     try{$p=Get-Process -Id $run.pid -ErrorAction Stop;if([Math]::Abs(($p.StartTime-[datetime]::Parse($run.processStartedAt)).TotalSeconds)-lt 2){return $run}}catch{}
     return $null
 }
-function Send-DashboardCommand($Root,$Action,[switch]$Watcher){
+function Send-DashboardCommand($Root,$Action,[switch]$Watcher,[hashtable]$Options=@{}){
     $path=Join-Path $Root $(if($Watcher){'state\tray-control.json'}else{'state\tray-host-command.json'})
     $id=[guid]::NewGuid().ToString('N');$tmp=$path+'.tmp'
     $null=New-Item -ItemType Directory (Split-Path $path -Parent) -Force
-    [IO.File]::WriteAllText($tmp,(@{id=$id;action=$Action;at=(Get-Date).ToString('o')}|ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($tmp,(@{id=$id;action=$Action;at=(Get-Date).ToString('o');options=$Options}|ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $tmp -Destination $path -Force
     return $id
 }

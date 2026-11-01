@@ -9,6 +9,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $Here = $PSScriptRoot
+. (Join-Path $Here 'lib\account-quota.ps1')
 
 function Get-SetupProperty($Object, [string]$Name) {
     if ($null -ne $Object -and $Object.PSObject.Properties[$Name]) { return $Object.$Name }
@@ -46,8 +47,24 @@ function Get-SetupCaller([string]$HomePath, [string]$PreferredId) {
 function Test-SetupAccounts($Accounts, [int]$Expected) {
     $items = @($Accounts)
     if ($items.Count -eq 0 -or @($items | Where-Object active).Count -ne 1) { throw 'Switch 必须有账号，并有且仅有一个当前账号。' }
-    if (@($items | Where-Object { -not (Get-SetupProperty $_ 'id') }).Count -gt 0 -or @($items.id | Select-Object -Unique).Count -ne $items.Count) { throw 'Switch 返回的账号身份不完整，暂不启动。' }
-    if ($Expected -gt 0 -and $items.Count -ne $Expected) { throw "账号数量发生变化（配置 $Expected，当前 $($items.Count)）。确认账号集合后运行 setup.ps1 -RefreshAccounts，保留现有去重记录。" }
+    if (-not (Test-AccountIdentities $items)) { throw 'Switch 返回的账号身份不完整，暂不启动。' }
+    # Expected and -RefreshAccounts remain accepted for old callers. Account
+    # membership is now discovered on every read, never pinned to a count.
+}
+
+function Repair-AccountCountPause {
+    foreach ($name in @('manual-pause.json','manual-pause.dry-run.json')) {
+        $path = Join-Path $Here ('state\' + $name)
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try { $pause = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { continue }
+        if (-not (Get-SetupProperty $pause 'active') -or (Get-SetupProperty $pause 'key') -notmatch '^loop:预期 \d+ 个账号，实际读取 \d+ 个；等待完整数据$') { continue }
+        # Only the retired count guard is resolved. Preserve all incident reports
+        # and every other pause, including uncertain switch/send/consume results.
+        $resolved = @{active=$false;at=(Get-Date).ToString('o');previous=$pause;action='account-sync-upgrade'}
+        $temp = $path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+        [IO.File]::WriteAllText($temp,($resolved | ConvertTo-Json -Depth 12),(New-Object Text.UTF8Encoding($true)))
+        [IO.File]::Replace($temp,$path,$path+'.bak')
+    }
 }
 
 if ($LibraryOnly) { return }
@@ -69,9 +86,7 @@ if (-not $endpoint) {
 if (-not ([uri]$endpoint).IsLoopback) { throw '本机适配仅支持 localhost 管理接口。' }
 $info = Invoke-SetupRead $endpoint 'get_app_info'
 $accounts = @(Invoke-SetupRead $endpoint 'list_accounts')
-$expected = 0
-if (-not $RefreshAccounts) { $expected = [int](Get-SetupProperty $local 'ExpectedAccounts') }
-Test-SetupAccounts $accounts $expected
+Test-SetupAccounts $accounts
 $codexHomePath = [string](Get-SetupProperty $local 'CodexHome')
 if (-not $codexHomePath) { $codexHomePath = [string](Get-SetupProperty $info 'codexHome') }
 if (-not $codexHomePath) { $codexHomePath = Join-Path $env:USERPROFILE '.codex' }
@@ -91,7 +106,7 @@ if (-not $CheckOnly) {
     $values['CswEndpoint'] = $endpoint
     $values['CodexHome'] = $codexHomePath
     $values['SessionRoot'] = Join-Path $codexHomePath 'sessions'
-    $values['ExpectedAccounts'] = $accounts.Count
+    $values.Remove('ExpectedAccounts')
     $values['DesktopCallerThreadId'] = $caller
     $legacyScheduler = Join-Path $env:LOCALAPPDATA 'CodexSwitchQuotaScheduler\CodexSwitchQuotaScheduler.ps1'
     if (-not $values.Contains('QuotaSchedulerScript') -or $values['QuotaSchedulerScript'] -eq $legacyScheduler) { $values['QuotaSchedulerScript'] = Join-Path $Here 'scheduler.ps1' }
@@ -103,6 +118,7 @@ if (-not $CheckOnly) {
         Move-Item -LiteralPath $tempPath -Destination $localPath -Force
     }
     foreach ($name in @('state','logs')) { $null = New-Item -ItemType Directory -Path (Join-Path $Here $name) -Force }
+    Repair-AccountCountPause
     if (-not $NoShortcut) {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Codex 额度看护.lnk'))

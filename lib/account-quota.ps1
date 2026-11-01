@@ -5,6 +5,27 @@ function Get-QuotaProperty($Object,[string]$Name){
     if($Object.PSObject.Properties[$Name]){return $Object.$Name}
     return $null
 }
+function Test-AccountIdentities($Accounts){
+    $items=@($Accounts)
+    if($items.Count -eq 0){return $false}
+    $ids=@()
+    foreach($item in $items){
+        $id=Get-QuotaProperty $item 'id'
+        if($id -isnot [string] -or [string]::IsNullOrWhiteSpace($id) -or $id -ne $id.Trim()){return $false}
+        $ids+=$id
+    }
+    return @($ids|Select-Object -Unique).Count -eq $items.Count
+}
+function Test-SameAccountIds($First,$Second){
+    $left=@($First);$right=@($Second)
+    return $left.Count -eq $right.Count -and @($left|Where-Object {$_ -notin $right}).Count -eq 0
+}
+function Test-RunAccountEnabled($Account,$Policy){
+    if(-not $Policy){return $true}
+    $id=Get-QuotaProperty $Account 'id'
+    $reserve=(Get-QuotaProperty $Account 'FiveHourLimitAbsent') -or $id -in @($Policy.knownReserveIds)
+    return (-not $reserve -or $id -in @($Policy.selectedIds))
+}
 function ConvertFrom-AccountUsage($Usage){
     $primary=Get-QuotaProperty $Usage 'primary';$secondary=Get-QuotaProperty $Usage 'secondary'
     $fiveWindow=$null;$weekWindow=$null;$absent=$false

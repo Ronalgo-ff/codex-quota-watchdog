@@ -128,10 +128,10 @@ try{
         $script:rounds++
         if($script:mode -eq 'no-active'){throw 'Codex Switch 没有唯一当前账号'}
         if($script:mode -eq 'quota'){throw '当前账号额度数据未知'}
-        if($script:mode -eq 'count'){throw '预期 5 个账号，实际读取 4 个；等待完整数据'}
+        if($script:mode -eq 'identity'){throw 'Codex Switch 账号身份数据不完整，等待重新读取'}
         if($script:mode -eq 'alternating'){
             if($script:rounds % 2 -eq 0){throw 'connection refused'}
-            throw '预期 5 个账号，实际读取 4 个；等待完整数据'
+            throw 'Codex Switch 账号身份数据不完整，等待重新读取'
         }
         if($script:mode -eq 'bug'){throw 'property x cannot be found'}
     }
@@ -142,8 +142,8 @@ try{
     Check 'data recovery needs no manual resume' ($script:rounds -eq 2 -and $script:pauses -eq $paused)
     $script:mode='alternating';$script:rounds=0;Start-WatchLoop (New-State) -MaxRounds 12
     Check 'unrelated service errors reset account-set grace period' ($script:pauses -eq $paused)
-    $script:mode='count';Start-WatchLoop (New-State) -MaxRounds 12
-    Check 'persistent account-count change still requires inspection' ($script:pauses -gt $paused)
+    $script:mode='identity';Start-WatchLoop (New-State) -MaxRounds 12
+    Check 'persistently malformed identities still require inspection' ($script:pauses -gt $paused)
     $paused=$script:pauses;$script:mode='bug';Start-WatchLoop (New-State) -MaxRounds 1
     Check 'unknown programming exception still pauses immediately' ($script:pauses -eq $paused+1)
     Remove-Item Function:\Get-Date
