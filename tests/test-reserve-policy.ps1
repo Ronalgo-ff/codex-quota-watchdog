@@ -73,6 +73,37 @@ try{
     foreach($a in $script:raw[0..1]){$a.usage.primary.remainingPercent=100};Clear-StateFlag $s 'desktopReadyAfter'
     Invoke-WatchRound $s
     Check 'recovered ordinary account regains priority over enabled reserve' ($script:switches[-1] -in @('a1','a2'))
+    $script:raw=New-Accounts;$now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $script:raw[2].usage.primary.resetsAt=$now+30000
+    $script:raw[3].usage.primary.resetsAt=$now+10000
+    $script:raw[4].usage.primary.resetsAt=$now+20000
+    $s=New-State 1;Invoke-WatchRound $s
+    Check 'one-account allowance selects earliest weekly refresh ahead of richer reserve' (($s.runAccountPolicy.selectedIds -join ',') -eq 'r2' -and $script:switches[-1] -eq 'r2')
+    foreach($a in $script:raw){$a.active=$a.id -eq 'a1'}
+    $s=New-State 2;Invoke-WatchRound $s
+    Check 'limited allowance binds earliest two weekly refreshes' (($s.runAccountPolicy.selectedIds -join ',') -eq 'r2,r3' -and $script:switches[-1] -eq 'r2')
+    $script:raw[3].usage.primary.remainingPercent=0;Clear-StateFlag $s 'desktopReadyAfter';Invoke-WatchRound $s
+    Check 'earliest reserve depletion switches to next selected refresh without borrowing richer unselected reserve' ($script:switches[-1] -eq 'r3' -and ($s.runAccountPolicy.selectedIds -join ',') -eq 'r2,r3')
+    $script:raw[4].usage.primary.remainingPercent=0;Clear-StateFlag $s 'desktopReadyAfter';$before=$script:switches.Count;Invoke-WatchRound $s
+    Check 'earliest-refresh allowance still waits after selected reserves deplete' ($script:switches.Count -eq $before -and $s.waitingReset.phase -eq 'waiting')
+    $script:raw=New-Accounts
+    $script:raw[2].usage.primary.resetsAt=$now+30000
+    $script:raw[3].usage.primary.resetsAt=$now+10000
+    $script:raw[4].usage.primary.resetsAt=$now+20000
+    $s=New-State 2;$null=Get-RunAccounts $s @(Get-Accounts)
+    $script:raw[3].usage.primary.resetsAt=$now+40000
+    Invoke-WatchRound $s
+    Check 'actual switch uses current earliest refresh within fixed allowance' ($script:switches[-1] -eq 'r3' -and ($s.runAccountPolicy.selectedIds -join ',') -eq 'r2,r3')
+    foreach($invalid in @($null,0,-1,'invalid','NaN',253402300800)){
+        $script:raw=New-Accounts
+        $script:raw[2].usage.primary.resetsAt=$invalid
+        $script:raw[3].usage.primary.resetsAt=$now+30000
+        $script:raw[4].usage.primary.resetsAt=$now+10000
+        $s=New-State 1;Invoke-WatchRound $s
+        Check 'unknown or invalid weekly reset sorts after confirmed refresh times' (($s.runAccountPolicy.selectedIds -join ',') -eq 'r3' -and $script:switches[-1] -eq 'r3')
+    }
+    $script:raw=New-Accounts;$s=New-State 1;Invoke-WatchRound $s
+    Check 'equal weekly resets retain higher remaining quota as tiebreaker' ($script:switches[-1] -eq 'r1')
     $oldRun=$Script:WatchRunId;$Script:WatchRunId=[guid]::NewGuid().ToString('N');$Script:ReserveAccountCount=0
     $enabled=@(Get-RunAccounts $s @(Get-Accounts))
     Check 'new run defaults off and does not inherit prior selected reserves' ($s.runAccountPolicy.selectedIds.Count -eq 0 -and $enabled.Count -eq 2 -and $s.handled.old -eq 'preserved')

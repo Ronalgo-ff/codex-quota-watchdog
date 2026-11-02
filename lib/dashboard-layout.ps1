@@ -40,7 +40,7 @@ $reserveNumber=New-Object Windows.Forms.NumericUpDown;$reserveNumber.SetBounds(1
 $reserveTotalLabel=Label $reservePanel '/ 0 个' 181 8 65 22 9 $false 'muted'
 $reserveHint=Label $overview '普通账号用完后启用' 658 147 340 24 9 $false 'muted'
 $reserveTip=New-Object Windows.Forms.ToolTip
-$reserveTip.SetToolTip($reserveToggle,'启动时按周剩余额度选定数量。本次名单固定，未选中的账号不会补入。')
+$reserveTip.SetToolTip($reserveToggle,'优先选用周额度最早刷新的备选账号。本次名单固定，未选中的账号不会补入。')
 $reserveTip.SetToolTip($reserveNumber,'停止看护后可重新选择备选数量。')
 $reserveToggle.Add_CheckedChanged({$reserveNumber.Enabled=$reserveToggle.Enabled -and $reserveToggle.Checked})
 $pauseReason=Label $overview '关闭窗口后继续在托盘运行。' 12 187 820 28 9 $false 'muted'

@@ -4,7 +4,7 @@ function Get-RunAccountPolicy {
     $policy=Get-StateFlag $State 'runAccountPolicy'
     if(-not $policy -or (Get-StateFlag $policy 'runId') -ne $Script:WatchRunId){
         $reserves=@($Accounts|Where-Object {Get-QuotaProperty $_ 'FiveHourLimitAbsent'})
-        $selected=@($reserves|Where-Object {$_.Switchable -or $_.Active}|Sort-Object -Property @{Expression={$_.Weekly};Descending=$true},Id|Select-Object -First $Script:ReserveAccountCount|ForEach-Object {$_.Id})
+        $selected=@($reserves|Where-Object {$_.Switchable -or $_.Active}|Sort-Object -Property @{Expression={Get-AccountWeeklyResetOrder $_};Descending=$false},@{Expression={$_.Weekly};Descending=$true},Id|Select-Object -First $Script:ReserveAccountCount|ForEach-Object {$_.Id})
         $policy=[pscustomobject]@{runId=$Script:WatchRunId;requestedCount=$Script:ReserveAccountCount;selectedIds=$selected;knownReserveIds=@($reserves|ForEach-Object {$_.Id});selectedAt=(Get-Date).ToString('o')}
         Set-StateFlag $State 'runAccountPolicy' $policy
         Save-State $State

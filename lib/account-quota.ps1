@@ -70,8 +70,15 @@ function Get-AccountPriority($Account,$FallbackIds=@()){
     if((Get-QuotaProperty $Account 'FiveHourLimitAbsent') -eq $true -or $Account.Id -in @($FallbackIds)){return 1}
     return 0
 }
+function Get-AccountWeeklyResetOrder($Account){
+    $reset=0L
+    if([long]::TryParse([string](Get-QuotaProperty $Account 'WeeklyReset'),[ref]$reset) -and $reset -gt 0 -and $reset -le 253402300799){return $reset}
+    # Missing or malformed timestamps cannot outrank a known refresh time.
+    return [long]::MaxValue
+}
 function Sort-QuotaAccounts($Accounts,$FallbackIds=@()){
     return @($Accounts|Sort-Object -Property @{Expression={Get-AccountPriority $_ $FallbackIds};Descending=$false},
+        @{Expression={if((Get-AccountPriority $_ $FallbackIds) -gt 0){Get-AccountWeeklyResetOrder $_}else{0}};Descending=$false},
         @{Expression={$_.Weekly};Descending=$true},@{Expression={$_.FiveHour};Descending=$true})
 }
 function Format-AccountFiveHour($Account){
