@@ -39,11 +39,15 @@ $reservePanel=Panel $overview 392 140 250 36
 $reserveToggle=New-Object Windows.Forms.CheckBox;$reserveToggle.Text='备选账号';$reserveToggle.SetBounds(10,7,100,23);$reserveToggle.ForeColor=$color.ink;$reserveToggle.Checked=$false;$reserveToggle.Enabled=$false;$reservePanel.Controls.Add($reserveToggle)
 $reserveNumber=New-Object Windows.Forms.NumericUpDown;$reserveNumber.SetBounds(116,6,56,25);$reserveNumber.Minimum=1;$reserveNumber.Maximum=1;$reserveNumber.Value=1;$reserveNumber.Enabled=$false;$reserveNumber.TextAlign='Center';$reserveNumber.BorderStyle='FixedSingle';$reservePanel.Controls.Add($reserveNumber)
 $reserveTotalLabel=Label $reservePanel '/ 0 个' 181 8 65 22 9 $false 'muted'
-$reserveHint=Label $overview '普通账号用完后启用' 658 147 340 24 9 $false 'muted'
+$reserveChoice=New-Object Windows.Forms.ComboBox
+$reserveChoice.DropDownStyle='DropDownList';$reserveChoice.DisplayMember='Label';$reserveChoice.Enabled=$false
+$reserveChoice.AccessibleName='备选账号选择方式';$reserveChoice.SetBounds(658,146,340,27);$overview.Controls.Add($reserveChoice)
 $reserveTip=New-Object Windows.Forms.ToolTip
 $reserveTip.SetToolTip($reserveToggle,'优先选用周额度最早刷新的备选账号。本次名单固定，未选中的账号不会补入。')
 $reserveTip.SetToolTip($reserveNumber,'停止看护后可重新选择备选数量。')
-$reserveToggle.Add_CheckedChanged({$reserveNumber.Enabled=$reserveToggle.Enabled -and $reserveToggle.Checked})
+$reserveTip.SetToolTip($reserveChoice,'可按周额度刷新时间自动选，或手动指定一个账号。普通账号用完后启用。')
+$reserveToggle.Add_CheckedChanged({Update-ReserveControlState})
+$reserveChoice.Add_SelectedIndexChanged({Update-ReserveControlState})
 $pauseReason=Label $overview '关闭窗口后继续在托盘运行。' 12 187 820 28 9 $false 'muted'
 $reportButton=Button $overview '查看异常报告' 888 182 150;$reportButton.Visible=$false
 $accountsHeading=Label $overview '账号列表' 12 227 300 25 11 $true
@@ -152,7 +156,7 @@ function Resize-DashboardLayout {
     Set-LayoutBounds $reserveToggle 10 7 100 23
     Set-LayoutBounds $reserveNumber 116 6 56 25
     Set-LayoutBounds $reserveTotalLabel 181 8 65 22
-    Set-LayoutBounds $reserveHint 658 135 ($pw-670) 24
+    Set-LayoutBounds $reserveChoice 658 132 ($pw-670) 27
     Set-LayoutBounds $pauseReason 12 175 ($pw-190) 28
     Set-LayoutBounds $reportButton ($pw-162) 167 150 34
     Set-LayoutBounds $accountsHeading 12 207 300 25

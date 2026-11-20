@@ -104,6 +104,15 @@ try{
     }
     $script:raw=New-Accounts;$s=New-State 1;Invoke-WatchRound $s
     Check 'equal weekly resets retain higher remaining quota as tiebreaker' ($script:switches[-1] -eq 'r1')
+    $script:raw=New-Accounts;$s=New-State 0;$Script:ReserveAccountId='r3'
+    Invoke-WatchRound $s
+    Check 'manual choice uses only the specified reserve when ordinary accounts are exhausted' (($s.runAccountPolicy.selectedIds -join ',') -eq 'r3' -and $script:switches[-1] -eq 'r3')
+    $script:raw=@($script:raw|Where-Object {$_.id -ne 'r3'});foreach($a in $script:raw){$a.active=$a.id -eq 'a1'}
+    $before=$script:switches.Count;Clear-StateFlag $s 'desktopReadyAfter';Invoke-WatchRound $s
+    Check 'removed manual reserve is never replaced by another reserve' (($s.runAccountPolicy.selectedIds -join ',') -eq 'r3' -and $script:switches.Count -eq $before)
+    $s=New-State 0;Invoke-WatchRound $s
+    Check 'missing manual reserve at startup does not enable another reserve' ($s.runAccountPolicy.selectedIds.Count -eq 0 -and $script:switches.Count -eq $before)
+    $Script:ReserveAccountId=''
     $oldRun=$Script:WatchRunId;$Script:WatchRunId=[guid]::NewGuid().ToString('N');$Script:ReserveAccountCount=0
     $enabled=@(Get-RunAccounts $s @(Get-Accounts))
     Check 'new run defaults off and does not inherit prior selected reserves' ($s.runAccountPolicy.selectedIds.Count -eq 0 -and $enabled.Count -eq 2 -and $s.handled.old -eq 'preserved')

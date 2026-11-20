@@ -23,7 +23,7 @@ if(-not $owned){$mutex.Dispose();exit 0}
 $script:uiRun=$null;$script:commandId=$null;$script:commandAt=$null;$script:job=$null;$script:jobProcess=$null
 $script:fetch=$null;$script:fetchHandle=$null;$script:fetchAt=[datetime]::MinValue;$script:accounts=@();$script:accountError='读取中'
 $script:eventKey='';$script:scheduleKey='';$script:quitting=$false;$script:timer=$null
-$script:displayReservePolicy=$null;$script:lastActiveRunId=$null
+$script:displayReservePolicy=$null;$script:lastActiveRunId=$null;$script:reserveChoicesKey=''
 $color=@{bg=[Drawing.ColorTranslator]::FromHtml('#F3F6F5');ink=[Drawing.ColorTranslator]::FromHtml('#243635');muted=[Drawing.ColorTranslator]::FromHtml('#64756E');accent=[Drawing.ColorTranslator]::FromHtml('#246557');soft=[Drawing.ColorTranslator]::FromHtml('#E4EFE9');warning=[Drawing.ColorTranslator]::FromHtml('#A36A16');border=[Drawing.ColorTranslator]::FromHtml('#E2E8E4')}
 function Label($Parent,$Text,$X,$Y,$W,$H,$Size=10,$Bold=$false,$Tone='ink'){
     $c=New-Object Windows.Forms.Label;$c.Text=$Text;$c.Location=New-Object Drawing.Point($X,$Y);$c.Size=New-Object Drawing.Size($W,$H);$c.ForeColor=$color[$Tone];$c.BackColor=[Drawing.Color]::Transparent;$c.AutoEllipsis=$true;$c.Font=New-Object Drawing.Font('Microsoft YaHei UI',$Size,$(if($Bold){[Drawing.FontStyle]::Bold}else{[Drawing.FontStyle]::Regular}));$Parent.Controls.Add($c);return $c
@@ -36,7 +36,14 @@ function Notice($Message,$ErrorFlag=$false){$notice.Text=$Message;$notice.ForeCo
 function Begin-Command($Action){
     if($script:commandId){return}
     $options=@{}
-    if($Action -eq 'start-live'){$options.reserveCount=if($reserveToggle.Checked){[int]$reserveNumber.Value}else{0}}
+    if($Action -eq 'start-live'){
+        $options.reserveCount=0
+        if($reserveToggle.Checked){
+            $choice=$reserveChoice.SelectedItem
+            if(-not $reserveChoice.Enabled -or -not $choice.Available){Notice '备选账号列表暂不可用，请重新选择。' $true;return}
+            if($choice.Id){$options.reserveId=$choice.Id}else{$options.reserveCount=[int]$reserveNumber.Value}
+        }
+    }
     $script:commandId=Send-DashboardCommand $Here $Action -Options $options;$script:commandAt=Get-Date;Notice '正在处理，请稍候…'
 }
 function Begin-ScheduleAction($Action){
@@ -63,12 +70,39 @@ function Start-AccountRead{
     }).AddArgument($port)
     $script:fetchHandle=$script:fetch.BeginInvoke()
 }
-function Render-Accounts{
-    $reserveTotal=@($script:accounts|Where-Object {(ConvertFrom-AccountUsage $_.usage).FiveHourLimitAbsent}).Count
+function Update-ReserveControlState{
+    $reserveChoice.Enabled=$reserveToggle.Enabled -and $reserveToggle.Checked
+    $reserveNumber.Enabled=$reserveChoice.Enabled -and $reserveChoice.SelectedIndex -eq 0
+}
+function Update-ReserveChoices{
+    $reserves=@($script:accounts|Where-Object {(ConvertFrom-AccountUsage $_.usage).FiveHourLimitAbsent})
+    $reserveTotal=$reserves.Count
+    $selectedId=if($script:uiRun){[string](Get-QuotaProperty $script:uiRun 'reserveRequestedId')}else{[string]$reserveChoice.SelectedItem.Id}
+    $choices=@([pscustomobject]@{Id='';Label='自动选择（周额度最早刷新）';Available=$true})
+    $choices+=@(foreach($account in @($reserves|Where-Object {$_.active -or (Get-QuotaProperty $_ 'directSwitchCompatible')}|Sort-Object email,id)){
+        $label=if($account.email){$account.email}else{$account.id}
+        if(@($reserves|Where-Object {$_.email -eq $account.email}).Count -gt 1){$label+=' · '+$account.id}
+        [pscustomobject]@{Id=$account.id;Label=$label;Available=$true}
+    })
+    if($selectedId -and $selectedId -notin @($choices.Id)){
+        $choices+=[pscustomobject]@{Id=$selectedId;Label='指定账号暂不可用 · '+$selectedId;Available=$false}
+    }
+    $key=ConvertTo-Json -InputObject $choices -Compress
+    if($key -ne $script:reserveChoicesKey){
+        $reserveChoice.Items.Clear();$reserveChoice.Items.AddRange([object[]]$choices)
+        $script:reserveChoicesKey=$key
+    }
+    for($i=0;$i -lt $choices.Count;$i++){
+        if($choices[$i].Id -eq $selectedId){$reserveChoice.SelectedIndex=$i;break}
+    }
     $reserveNumber.Maximum=[Math]::Max([Math]::Max(1,$reserveTotal),[int](Get-QuotaProperty $script:uiRun 'reserveRequestedCount'))
     $reserveTotalLabel.Text='/ '+$reserveTotal+' 个'
-    $reserveToggle.Enabled=(-not $script:uiRun -and -not $script:commandId -and $reserveTotal -gt 0 -and -not $script:accountError)
-    $reserveNumber.Enabled=($reserveToggle.Enabled -and $reserveToggle.Checked)
+    $reserveToggle.Enabled=(-not $script:uiRun -and -not $script:commandId -and ($reserveTotal -gt 0 -or $reserveToggle.Checked) -and -not $script:accountError)
+    Update-ReserveControlState
+    return $reserveTotal
+}
+function Render-Accounts{
+    $reserveTotal=Update-ReserveChoices
     $accountsHeading.Text='账号列表  '+$script:accounts.Count
     $sortHint.Text='普通账号 '+($script:accounts.Count-$reserveTotal)+' 个    备选账号 '+$reserveTotal+' 个'
     $sortColumn=$accountGrid.SortedColumn
@@ -116,19 +150,18 @@ function Refresh-UI{
         $statusLabel.ForeColor=if($paused){$color.warning}else{$color.accent}
         $statusLabel.BackColor=if($paused){[Drawing.ColorTranslator]::FromHtml('#FAEED8')}else{$color.soft}
         $elapsedValue.Text=if($script:uiRun){'已运行 '+(Format-DashboardElapsed $script:uiRun)}else{'等待启动'}
-        $runDetail.Text=if($script:uiRun){'普通账号优先，备选'+$(if([int](Get-QuotaProperty $script:uiRun 'reserveRequestedCount') -gt 0){'已启用 '+$script:uiRun.reserveRequestedCount+' 个'}else{'未启用'})}else{'启动后自动检查额度与任务状态'}
+        $runDetail.Text=if($script:uiRun){'普通账号优先，备选'+$(if(Get-QuotaProperty $script:uiRun 'reserveRequestedId'){'已手动指定'}elseif([int](Get-QuotaProperty $script:uiRun 'reserveRequestedCount') -gt 0){'自动选择 '+$script:uiRun.reserveRequestedCount+' 个'}else{'未启用'})}else{'启动后自动检查额度与任务状态'}
         $pauseButton.Enabled=[bool]$script:uiRun;$pauseButton.Text=if($paused){'恢复看护'}else{'暂停看护'};$stopButton.Enabled=[bool]$script:uiRun
         $startButton.Enabled=(-not $script:uiRun -and -not $script:commandId)
         $startButton.BackColor=if($startButton.Enabled){$color.accent}else{$color.border}
         if($script:uiRun){
             $requested=[int](Get-QuotaProperty $script:uiRun 'reserveRequestedCount')
             $reserveNumber.Maximum=[Math]::Max([int]$reserveNumber.Maximum,[Math]::Max(1,$requested))
-            $reserveToggle.Checked=$requested -gt 0
+            $reserveToggle.Checked=$requested -gt 0 -or [bool](Get-QuotaProperty $script:uiRun 'reserveRequestedId')
             $reserveNumber.Value=[Math]::Max(1,$requested)
             $script:lastActiveRunId=$script:uiRun.id
-        }elseif($script:lastActiveRunId){$reserveToggle.Checked=$false;$reserveNumber.Value=1;$script:lastActiveRunId=$null}
-        $reserveToggle.Enabled=(-not $script:uiRun -and -not $script:commandId -and @($script:accounts).Count -gt 0 -and -not $script:accountError -and @($script:accounts|Where-Object {(ConvertFrom-AccountUsage $_.usage).FiveHourLimitAbsent}).Count -gt 0)
-        $reserveNumber.Enabled=$reserveToggle.Enabled -and $reserveToggle.Checked
+        }elseif($script:lastActiveRunId){$reserveToggle.Checked=$false;$reserveNumber.Value=1;$reserveChoice.SelectedIndex=0;$script:lastActiveRunId=$null}
+        $null=Update-ReserveChoices
         if($pause -and $pause.active){$pauseReason.Text='异常暂停：'+$pause.reason+'。处理后点击恢复。';$pauseReason.ForeColor=$color.warning;$reportButton.Visible=$true}else{$pauseReason.Text='关闭窗口后继续在托盘运行。';$pauseReason.ForeColor=$color.muted;$reportButton.Visible=$false}
         $quota=Read-DashboardJson (Join-Path $Here 'state\quota-status.json')
         $script:displayReservePolicy=if($script:uiRun -and $quota -and $quota.pid -eq $script:uiRun.pid){Get-QuotaProperty $quota 'reservePolicy'}else{$null}

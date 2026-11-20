@@ -19,6 +19,8 @@
     循环上限，0 = 不限。
 .PARAMETER ReserveAccountCount
     本次允许使用的周额度备选数量，默认 0。名单在首次读取时固定，之后不自动补入。
+.PARAMETER ReserveAccountId
+    本次手动指定一个周额度备选账号，不能与自动备选数量同时指定。
 .EXAMPLE
     .\codex-autopilot.ps1              # 演习，循环
     .\codex-autopilot.ps1 -Once        # 演习，单轮
@@ -31,6 +33,7 @@ param(
     [switch]$Once,
     [int]$MaxRounds = 0,
     [int]$ReserveAccountCount = 0,
+    [string]$ReserveAccountId,
     [switch]$LibraryOnly
 )
 
@@ -39,6 +42,8 @@ $ErrorActionPreference = 'Stop'
 $Script:WatchRunId = [guid]::NewGuid().ToString('N')
 $Script:ReserveAccountCount = if($PSBoundParameters.ContainsKey('ReserveAccountCount')){$ReserveAccountCount}else{0}
 if($Script:ReserveAccountCount -lt 0 -or $Script:ReserveAccountCount -gt 2147483){throw '备选账号数量必须为非负整数'}
+$Script:ReserveAccountId = if($PSBoundParameters.ContainsKey('ReserveAccountId')){$ReserveAccountId}else{''}
+if($Script:ReserveAccountId -and $Script:ReserveAccountCount -ne 0){throw '手动指定与自动选择备选账号不能同时使用'}
 
 # ══════════════════════════════════════════════════════════════════
 #  配置
@@ -239,6 +244,7 @@ function Initialize-Paths {
         processStartedAt = (Get-Process -Id $PID).StartTime.ToString('o')
         mode = $(if ($Live) { '正常模式' } else { '演习模式' }); eventFile = $Script:EventFile
         reserveRequestedCount = $Script:ReserveAccountCount
+        reserveRequestedId = $Script:ReserveAccountId
     }
     Write-File ("续跑方式 {0}；codex.exe = {1}" -f $Script:Config.ResumeMode, $(if ($Script:CodexExe) { $Script:CodexExe } else { '(没找到，需要修复后才能续跑)' }))
     $Script:StatusActive = $false

@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $Here = $PSScriptRoot
 . (Join-Path $Here 'lib\ui-domain.ps1')
 if(Test-QuotaUiDomainRequired){exit (Invoke-QuotaUiDomain $PSCommandPath $PSBoundParameters)}
+. (Join-Path $Here 'lib\process.ps1')
 $WatcherFile = Join-Path $Here 'codex-autopilot.ps1'
 $MonitorFile = Join-Path $Here 'dashboard.ps1'
 $LogDir = Join-Path $Here 'logs'
@@ -100,12 +101,13 @@ public static class QuotaMonitorWindow {
     }
 
     function Start-Watcher {
-        param([switch]$Live,[ValidateRange(0,2147483)][int]$ReserveAccountCount=0)
+        param([switch]$Live,[ValidateRange(0,2147483)][int]$ReserveAccountCount=0,[string]$ReserveAccountId)
         if (@(Get-Watchers).Count -gt 0) { return }
         if (-not (Test-Path -LiteralPath $WatcherFile)) { throw "找不到看护脚本：$WatcherFile" }
         if (-not (Test-Csw)) { throw 'Codex Switch 尚未运行，请先启动它' }
         $mode = if ($Live) { '-Live' } else { '-DryRun' }
         $args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" {1} -ReserveAccountCount {2}' -f $WatcherFile, $mode, $ReserveAccountCount
+        if($ReserveAccountId){$args+=' -ReserveAccountId:'+(ConvertTo-NativeArgument $ReserveAccountId)}
         $p = Start-QuotaHiddenProcess -Arguments $args
         Write-TrayLog "启动 $mode 看护 PID=$($p.Id)"
         $deadline=(Get-Date).AddSeconds(5)
@@ -181,8 +183,10 @@ public static class QuotaMonitorWindow {
             switch ([string]$command.action) {
                 'start-live' {
                     $reserveCount=0
+                    $reserveId=''
                     if($command.PSObject.Properties['options'] -and $command.options.PSObject.Properties['reserveCount']){$reserveCount=[int]$command.options.reserveCount}
-                    Start-Watcher -Live -ReserveAccountCount $reserveCount
+                    if($command.PSObject.Properties['options'] -and $command.options.PSObject.Properties['reserveId']){$reserveId=[string]$command.options.reserveId}
+                    Start-Watcher -Live -ReserveAccountCount $reserveCount -ReserveAccountId $reserveId
                 }
                 'stop'       { Stop-Watcher }
                 'show'       { Show-Monitor }

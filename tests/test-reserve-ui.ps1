@@ -8,7 +8,7 @@ $form.ShowInTaskbar=$false;$form.Opacity=0;$form.Show();[Windows.Forms.Applicati
 $scale=$form.DeviceDpi/96.0
 $script:passed=0
 function Assert-UI($Name,$OK){if(-not $OK){throw "UI assertion failed: $Name"};$script:passed++;Write-Host "[PASS] $Name"}
-$script:accounts=@(1..3|ForEach-Object {[pscustomobject]@{id="r$_";email="r$_@test";active=$false;usage=@{primary=@{windowMinutes=10080;remainingPercent=100};secondary=$null;error=$null}}})
+$script:accounts=@(1..3|ForEach-Object {[pscustomobject]@{id="r$_";email="r$_@test";active=$false;directSwitchCompatible=$true;usage=@{primary=@{windowMinutes=10080;remainingPercent=100};secondary=$null;error=$null}}})
 $script:accounts+=[pscustomobject]@{id='a1';email='a1@test';active=$true;usage=@{primary=@{windowMinutes=300;remainingPercent=50};secondary=@{windowMinutes=10080;remainingPercent=50};error=$null}}
 $script:accountError='';Render-Accounts
 Assert-UI 'front end has no dry-run control' (@($overview.Controls|Where-Object {$_.Text -match '演习'}).Count -eq 0)
@@ -18,7 +18,19 @@ Assert-UI 'checkbox enables bounded reserve count in compact panel' ($reserveNum
 $reserveNumber.Value=2;$startButton.PerformClick()
 $command=Read-DashboardJson (Join-Path $Here 'state\tray-host-command.json')
 Assert-UI 'start button sends this run count without invoking account APIs' ($command.action -eq 'start-live' -and $command.options.reserveCount -eq 2)
+$script:commandId=$null
+$reserveChoice.SelectedIndex=3
+Assert-UI 'manual mode offers individual reserves and disables the count' ($reserveChoice.SelectedItem.Id -eq 'r3' -and -not $reserveNumber.Enabled -and $reserveChoice.Items.Count -eq 4)
+$allAccounts=$script:accounts;$script:accounts=@($allAccounts|Where-Object {$_.id -ne 'r3'});Render-Accounts
+$startButton.PerformClick()
+Assert-UI 'removed selection never silently falls back to automatic mode' ($reserveChoice.SelectedItem.Id -eq 'r3' -and -not $reserveChoice.SelectedItem.Available -and -not $script:commandId)
+$script:accounts=$allAccounts;Render-Accounts;$startButton.PerformClick()
+$command=Read-DashboardJson (Join-Path $Here 'state\tray-host-command.json')
+Assert-UI 'manual start sends the precise account ID instead of a count' ($command.options.reserveId -eq 'r3' -and $command.options.reserveCount -eq 0)
 $script:commandId=$null;$at=(Get-Date).ToString('o')
+Write-ScheduleJson (Join-Path $Here 'state\current-run.json') @{pid=$PID;id='manual-run';processStartedAt=(Get-Process -Id $PID).StartTime.ToString('o');startedAt=$at;mode='正常模式';reserveRequestedId='r3';eventFile=(Join-Path $Here 'logs\fixture.log')}
+$reserveChoice.SelectedIndex=0;Refresh-UI
+Assert-UI 'reopened view restores and locks the manual selection' ($reserveToggle.Checked -and -not $reserveChoice.Enabled -and $reserveChoice.SelectedItem.Id -eq 'r3')
 Write-ScheduleJson (Join-Path $Here 'state\current-run.json') @{pid=$PID;id='fixture-run';processStartedAt=(Get-Process -Id $PID).StartTime.ToString('o');startedAt=$at;mode='正常模式';reserveRequestedCount=2;eventFile=(Join-Path $Here 'logs\fixture.log')}
 Write-ScheduleJson (Join-Path $Here 'state\quota-status.json') @{pid=$PID;desktopHealth=@{mode='ok'};waitingReset=$null;reservePolicy=@{selectedIds=@('r1','r2');knownReserveIds=@('r1','r2','r3')}}
 Refresh-UI;Render-Accounts
