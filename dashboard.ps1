@@ -7,10 +7,16 @@ $Here=$PSScriptRoot
 . (Join-Path $Here 'lib\account-quota.ps1')
 . (Join-Path $Here 'lib\scheduler.ps1')
 if($LibraryOnly){return}
+. (Join-Path $Here 'lib\ui-domain.ps1')
+if(Test-QuotaUiDomainRequired){exit (Invoke-QuotaUiDomain $PSCommandPath $PSBoundParameters)}
 Add-Type -AssemblyName System.Windows.Forms
+if([Windows.Forms.Application].GetMethod('SetHighDpiMode')){[void][Windows.Forms.Application]::SetHighDpiMode([Enum]::Parse([Windows.Forms.Application].Assembly.GetType('System.Windows.Forms.HighDpiMode'),'PerMonitorV2'))}
+Add-Type -Path (Join-Path $Here 'lib\ui-dpi.cs')
+[QuotaUiDpi]::Initialize()
 Add-Type -AssemblyName System.Drawing
 . (Join-Path $Here 'lib\log-view.ps1')
 [Windows.Forms.Application]::EnableVisualStyles()
+[Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
 $owned=$false
 $mutex=New-Object Threading.Mutex($true,('Local\CodexQuotaDashboard'+$(if($SmokeTest -or $PreviewPath){'-'+$PID}else{''})),[ref]$owned)
 if(-not $owned){$mutex.Dispose();exit 0}
@@ -152,6 +158,17 @@ function Refresh-UI{
         Start-AccountRead
     }catch{Notice ('界面刷新失败：'+$_.Exception.Message) $true}
 }
+function Write-DashboardWindowStatus {
+    if($PreviewPath -or $SmokeTest -or -not $form.Visible){return}
+    $brandText=[Windows.Forms.TextRenderer]::MeasureText($brand.Text,$brand.Font,[Drawing.Size]::Empty,([Windows.Forms.TextFormatFlags]::NoPadding -bor [Windows.Forms.TextFormatFlags]::SingleLine))
+    $quotaText=[Windows.Forms.TextRenderer]::MeasureText($fiveValue.Text,$fiveValue.Font,[Drawing.Size]::Empty,([Windows.Forms.TextFormatFlags]::NoPadding -bor [Windows.Forms.TextFormatFlags]::SingleLine))
+    Write-ScheduleJson (Join-Path $Here 'state\dashboard-window.json') @{
+        pid=$PID;handle=$form.Handle.ToInt64();visible=$form.Visible;at=(Get-Date).ToString('o')
+        dpi=$form.DeviceDpi;clientWidth=$form.ClientSize.Width;clientHeight=$form.ClientSize.Height
+        brandFontPixels=$brand.Font.Size;brandMeasuredHeight=$brandText.Height;brandHeight=$brand.Height
+        quotaFontPixels=$fiveValue.Font.Size;quotaMeasuredHeight=$quotaText.Height;quotaHeight=$fiveValue.Height
+    }
+}
 . (Join-Path $Here 'lib\dashboard-layout.ps1')
 $startButton.Add_Click({Begin-Command 'start-live'})
 $pauseButton.Add_Click({$s=Read-DashboardJson (Join-Path $Here 'state\tray-status.json');$action=if($s -and $s.paused){'resume'}else{'pause'};$null=Send-DashboardCommand $Here $action -Watcher;Notice '已提交暂停/恢复请求'})
@@ -164,10 +181,10 @@ $saveButton.Add_Click({try{Begin-ScheduleAction 'save'}catch{Notice $_.Exception
 $disableButton.Add_Click({try{Begin-ScheduleAction 'disable'}catch{Notice $_.Exception.Message $true}})
 $testButton.Add_Click({try{Begin-ScheduleAction 'test'}catch{Notice $_.Exception.Message $true}})
 $consumeButton.Add_Click({if([Windows.Forms.MessageBox]::Show($form,'立即对可用账号消耗一次额度？这会消耗少量 Codex 额度。','确认执行','YesNo','Question') -eq 'Yes'){try{Begin-ScheduleAction 'consume'}catch{Notice $_.Exception.Message $true}}})
-$form.Add_Shown({Resize-DashboardLayout;if($followEvents.Checked){$eventsBox.SelectionStart=$eventsBox.TextLength;$eventsBox.ScrollToCaret()};if(-not $PreviewPath -and -not $SmokeTest){Write-ScheduleJson (Join-Path $Here 'state\dashboard-window.json') @{pid=$PID;handle=$form.Handle.ToInt64();visible=$form.Visible;at=(Get-Date).ToString('o')}}})
+$form.Add_Shown({Resize-DashboardLayout;if($followEvents.Checked){$eventsBox.SelectionStart=$eventsBox.TextLength;$eventsBox.ScrollToCaret()};Write-DashboardWindowStatus})
 try{
     if($PreviewPath){
-        if($PreviewWidth -gt 0 -and $PreviewHeight -gt 0){$form.ClientSize=New-Object Drawing.Size($PreviewWidth,$PreviewHeight)}
+        if($PreviewWidth -gt 0 -and $PreviewHeight -gt 0){$form.ClientSize=New-Object Drawing.Size($PreviewWidth,$PreviewHeight);Save-DashboardWindowSize}
         $form.Show();[Windows.Forms.Application]::DoEvents();Resize-DashboardLayout
         $script:accounts=@(1..6|ForEach-Object {[pscustomobject]@{id="a$_";email="account$_@example.com";active=($_ -eq 1);usage=@{error=$null;primary=@{remainingPercent=100-$_*15;windowMinutes=300;resetsAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+18000};secondary=@{remainingPercent=100-$_*8;windowMinutes=10080}}}})
         $script:accounts+=@(1..3|ForEach-Object {[pscustomobject]@{id="r$_";email="reserve$_@example.com";active=$false;usage=@{error=$null;primary=@{remainingPercent=20+$_*25;windowMinutes=10080};secondary=$null}}})
@@ -184,4 +201,4 @@ try{
         Refresh-UI;$script:timer=New-Object Windows.Forms.Timer;$script:timer.Interval=1000;$script:timer.Add_Tick({if($SmokeTest){$form.Close()}else{Refresh-UI}});$script:timer.Start();[void]$form.ShowDialog()
     }
 }catch{Write-SchedulerEvent ('合并界面异常：'+$_.Exception.ToString()) 'ERROR';throw}
-finally{if($script:timer){$script:timer.Stop();$script:timer.Dispose()};if($script:fetch){$script:fetch.Stop();$script:fetch.Dispose()};$form.Dispose();$reserveTip.Dispose();$script:ActiveAccountFont.Dispose();if($owned){$mutex.ReleaseMutex()};$mutex.Dispose()}
+finally{if($script:timer){$script:timer.Stop();$script:timer.Dispose()};if($script:fetch){$script:fetch.Stop();$script:fetch.Dispose()};$form.Dispose();$reserveTip.Dispose();foreach($font in $script:dashboardFonts.Values){$font.Dispose()};if($owned){$mutex.ReleaseMutex()};$mutex.Dispose()}

@@ -5,6 +5,7 @@ $root=Split-Path $PSScriptRoot -Parent
 $tmp=Join-Path $env:TEMP ('quota-reserve-ui-'+[guid]::NewGuid().ToString('N'))
 $fixture=@'
 $form.ShowInTaskbar=$false;$form.Opacity=0;$form.Show();[Windows.Forms.Application]::DoEvents()
+$scale=$form.DeviceDpi/96.0
 $script:passed=0
 function Assert-UI($Name,$OK){if(-not $OK){throw "UI assertion failed: $Name"};$script:passed++;Write-Host "[PASS] $Name"}
 $script:accounts=@(1..3|ForEach-Object {[pscustomobject]@{id="r$_";email="r$_@test";active=$false;usage=@{primary=@{windowMinutes=10080;remainingPercent=100};secondary=$null;error=$null}}})
@@ -13,7 +14,7 @@ $script:accountError='';Render-Accounts
 Assert-UI 'front end has no dry-run control' (@($overview.Controls|Where-Object {$_.Text -match '演习'}).Count -eq 0)
 Assert-UI 'reserve starts unchecked with disabled number and actual total' (-not $reserveToggle.Checked -and -not $reserveNumber.Enabled -and $reserveNumber.Maximum -eq 3 -and $reserveTotalLabel.Text -eq '/ 3 个')
 $reserveToggle.Checked=$true
-Assert-UI 'checkbox enables bounded reserve count in compact panel' ($reserveNumber.Enabled -and $reserveNumber.Minimum -eq 1 -and $reservePanel.Width -lt 280)
+Assert-UI 'checkbox enables bounded reserve count in compact panel' ($reserveNumber.Enabled -and $reserveNumber.Minimum -eq 1 -and $reservePanel.Width/$scale -lt 280)
 $reserveNumber.Value=2;$startButton.PerformClick()
 $command=Read-DashboardJson (Join-Path $Here 'state\tray-host-command.json')
 Assert-UI 'start button sends this run count without invoking account APIs' ($command.action -eq 'start-live' -and $command.options.reserveCount -eq 2)
@@ -33,7 +34,7 @@ Write-ScheduleJson (Join-Path $Here 'state\current-run.json') @{pid=2147483647;p
 Refresh-UI
 Assert-UI 'stopping returns reserve choice to default off' (-not $reserveToggle.Checked -and $reserveNumber.Value -eq 1 -and $startButton.Enabled)
 foreach($size in @(@(1040,780),@(1500,1050),@(1120,900))){
-    $form.ClientSize=New-Object Drawing.Size($size[0],$size[1]);[Windows.Forms.Application]::DoEvents();Resize-DashboardLayout
+    $form.ClientSize=New-Object Drawing.Size([int]($size[0]*$scale),[int]($size[1]*$scale));[Windows.Forms.Application]::DoEvents();Resize-DashboardLayout
     Assert-UI ('account list and records fit after resizing to '+($size -join 'x')) ($accountGrid.Right -le $overview.ClientSize.Width -and $accountGrid.Bottom -lt $eventsHeading.Top -and $eventsBox.Top -gt $latestEvents.Bottom -and $eventsBox.Bottom -le $overview.ClientSize.Height -and $eventsBox.Height -ge 50)
     $tabs.SelectedTab=$schedulePage;[Windows.Forms.Application]::DoEvents();Resize-DashboardLayout
     Assert-UI ('schedule controls and records fit after resizing to '+($size -join 'x')) ($settingsCard.Right -le $schedulePage.ClientSize.Width -and $testButton.Right -le $settingsCard.ClientSize.Width -and $scheduleLog.Top -gt $latestSchedule.Bottom -and $scheduleLog.Bottom -le $schedulePage.ClientSize.Height)

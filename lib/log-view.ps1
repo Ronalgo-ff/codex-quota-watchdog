@@ -1,4 +1,5 @@
 ﻿# RichEdit keeps a usable vertical scrollbar even with borderless themed controls.
+if(-not ('QuotaUiDpi' -as [type])){Add-Type -Path (Join-Path $PSScriptRoot 'ui-dpi.cs')}
 function New-DashboardLogBox($Parent,$X,$Y,$Width,$Height) {
     $box=New-Object Windows.Forms.RichTextBox
     $box.Multiline=$true;$box.ReadOnly=$true;$box.WordWrap=$true
@@ -24,10 +25,23 @@ function Set-DashboardLogText($Box,[string[]]$Lines,[bool]$FollowLatest) {
     $first=$Box.GetCharIndexFromPosition((New-Object Drawing.Point(1,1)))
     $selection=$Box.SelectionStart;$length=$Box.SelectionLength
     $Box.Lines=$Lines
+    Reset-DashboardLogDpi $Box
     if($FollowLatest){$Box.SelectionStart=$Box.TextLength;$Box.SelectionLength=0;$Box.ScrollToCaret()}
     else{
         $Box.SelectionStart=[Math]::Min($first,$Box.TextLength);$Box.SelectionLength=0;$Box.ScrollToCaret()
         # Restoring selection does not scroll, so the user's highlight stays intact.
         $Box.Select([Math]::Min($selection,$Box.TextLength),[Math]::Min($length,[Math]::Max(0,$Box.TextLength-$selection)))
     }
+}
+
+function Reset-DashboardLogDpi($Box) {
+    # RichEdit stores character sizes in points separately from Control.Font.
+    # Framework WinForms can scale both on a monitor change; reset that format
+    # to the original 9 points so repeated trips cannot shrink the log text.
+    $first=$Box.GetCharIndexFromPosition((New-Object Drawing.Point(1,1)))
+    $selection=$Box.SelectionStart;$length=$Box.SelectionLength
+    $Box.ZoomFactor=1.0
+    [QuotaUiDpi]::ResetLogFont($Box.Handle)
+    $Box.Select([Math]::Min($first,$Box.TextLength),0);$Box.ScrollToCaret()
+    $Box.Select([Math]::Min($selection,$Box.TextLength),[Math]::Min($length,[Math]::Max(0,$Box.TextLength-$selection)))
 }

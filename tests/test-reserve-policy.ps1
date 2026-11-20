@@ -62,7 +62,7 @@ try{
     Check 'unselected reserve quota outage does not block ordinary batch' (($script:batches[-1] -join ',') -eq 'a1,a2')
     $script:raw=New-Accounts;foreach($a in $script:raw){$a.active=$a.id -eq 'r2'};$s=New-State 1
     $proof=Get-ResumeAccountProof $s
-    Check 'unselected active reserve cannot authorize continuation' ($null -eq $proof -and ($s.runAccountPolicy.selectedIds -join ',') -eq 'r1')
+    Check 'manual active reserve can authorize continuation without joining automatic allowance' ($proof.accountId -eq 'r2' -and ($s.runAccountPolicy.selectedIds -join ',') -eq 'r1')
     $script:raw=New-Accounts;$script:raw[0].usage.primary.remainingPercent=100;$s=New-State 3;$before=$script:switches.Count
     Invoke-WatchRound $s
     Check 'available ordinary account prevents premature reserve activation' ($script:switches.Count -eq $before)

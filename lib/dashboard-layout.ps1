@@ -1,10 +1,11 @@
 ﻿# Native desktop layout. All coordinates are logical pixels; resizing leaves
 # room for the account roster first, then expands the event history.
 $form=New-Object Windows.Forms.Form
+$form.SuspendLayout()
 $form.Text='Codex 额度看护';$form.StartPosition='CenterScreen'
 $form.ClientSize=New-Object Drawing.Size(1120,900);$form.MinimumSize=New-Object Drawing.Size(1056,819)
 $form.Font=New-Object Drawing.Font('Microsoft YaHei UI',9)
-$form.AutoScaleDimensions=New-Object Drawing.SizeF(96,96);$form.AutoScaleMode='Dpi';$form.BackColor=$color.bg
+$form.AutoScaleMode='None';$form.BackColor=$color.bg
 $iconPath=Join-Path $Here 'assets\codex-quota.ico';if(Test-Path $iconPath){$form.Icon=New-Object Drawing.Icon($iconPath)}
 $header=Panel $form 0 0 1120 86
 $brand=Label $header 'Codex 额度看护' 28 17 540 32 18 $true
@@ -23,11 +24,11 @@ $currentCaption=Label $summaryPanel '当前账号' 20 13 410 23 9 $false 'muted'
 $currentLabel=Label $summaryPanel '正在读取账号…' 20 38 560 31 16 $true;$currentLabel.AutoEllipsis=$true
 $runDetail=Label $summaryPanel '启动后自动检查额度与任务状态' 20 78 560 22 9 $false 'muted'
 $fiveCaption=Label $summaryPanel '五小时剩余' 620 14 160 23 9 $false 'muted'
-$fiveValue=Label $summaryPanel '--' 620 37 160 38 24 $true 'accent';$fiveValue.Font=New-Object Drawing.Font('Segoe UI',24,[Drawing.FontStyle]::Bold)
+$fiveValue=Label $summaryPanel '--' 620 37 160 46 24 $true 'accent';$fiveValue.Font=New-Object Drawing.Font('Segoe UI',24,[Drawing.FontStyle]::Bold)
 $fiveTrack=Panel $summaryPanel 620 89 160 5;$fiveTrack.BackColor=$color.soft
 $fiveFill=Panel $fiveTrack 0 0 0 5;$fiveFill.BackColor=$color.accent
 $weekCaption=Label $summaryPanel '周剩余' 830 14 170 23 9 $false 'muted'
-$weekValue=Label $summaryPanel '--' 830 37 170 38 24 $true 'accent';$weekValue.Font=New-Object Drawing.Font('Segoe UI',24,[Drawing.FontStyle]::Bold)
+$weekValue=Label $summaryPanel '--' 830 37 170 46 24 $true 'accent';$weekValue.Font=New-Object Drawing.Font('Segoe UI',24,[Drawing.FontStyle]::Bold)
 $weekTrack=Panel $summaryPanel 830 89 170 5;$weekTrack.BackColor=$color.soft
 $weekFill=Panel $weekTrack 0 0 0 5;$weekFill.BackColor=$color.accent
 
@@ -55,6 +56,7 @@ $accountGrid.SelectionMode='FullRowSelect';$accountGrid.MultiSelect=$false;$acco
 $accountGrid.CellBorderStyle='SingleHorizontal';$accountGrid.GridColor=$color.border
 $accountGrid.ColumnHeadersBorderStyle='None';$accountGrid.ColumnHeadersHeightSizeMode='DisableResizing';$accountGrid.ColumnHeadersHeight=34
 $accountGrid.ColumnHeadersDefaultCellStyle.BackColor=$color.soft;$accountGrid.ColumnHeadersDefaultCellStyle.ForeColor=$color.ink
+$accountGrid.ColumnHeadersDefaultCellStyle.SelectionBackColor=$color.soft;$accountGrid.ColumnHeadersDefaultCellStyle.SelectionForeColor=$color.ink
 $accountGrid.ColumnHeadersDefaultCellStyle.Font=New-Object Drawing.Font('Microsoft YaHei UI',9)
 $accountGrid.RowTemplate.Height=30;$accountGrid.DefaultCellStyle.Font=New-Object Drawing.Font('Microsoft YaHei UI',9)
 $accountGrid.DefaultCellStyle.ForeColor=$color.ink;$accountGrid.DefaultCellStyle.Padding=New-Object Windows.Forms.Padding(10,0,8,0)
@@ -102,11 +104,27 @@ foreach($box in @($eventsBox,$scheduleLog)){$box.BorderStyle='None';$box.BackCol
 $script:ActiveAccountFont=New-Object Drawing.Font('Microsoft YaHei UI',9,[Drawing.FontStyle]::Bold)
 
 function Set-LayoutBounds($Control,$X,$Y,$Width,$Height){
-    $scale=$form.CurrentAutoScaleDimensions.Width/96.0
+    $scale=$form.DeviceDpi/96.0
     $Control.SetBounds([int]($X*$scale),[int]($Y*$scale),[int]($Width*$scale),[int]($Height*$scale))
 }
 function Resize-DashboardLayout {
-    $scale=$form.CurrentAutoScaleDimensions.Width/96.0
+    if($script:dashboardLayoutBusy){return}
+    $script:dashboardLayoutBusy=$true
+    try{
+    Set-DashboardDpiStyles
+    $scale=$form.DeviceDpi/96.0
+    # Classic WinForms does not scale these DataGridView metrics with its bounds.
+    $rowHeight=[int][Math]::Round(30*$scale)
+    $accountGrid.RowTemplate.Height=$rowHeight
+    foreach($row in $accountGrid.Rows){if($row.Height -ne $rowHeight){$row.Height=$rowHeight}}
+    $accountGrid.ColumnHeadersHeight=[int][Math]::Round(34*$scale)
+    $cellPadding=New-Object Windows.Forms.Padding([int](10*$scale),0,[int](8*$scale),0)
+    $accountGrid.DefaultCellStyle.Padding=$cellPadding;$accountGrid.ColumnHeadersDefaultCellStyle.Padding=$cellPadding
+    # CellStyle fonts are not child controls. Apply the same absolute font.
+    if(-not $accountGrid.DefaultCellStyle.Font.Equals($form.Font)){
+        $accountGrid.DefaultCellStyle.Font=$form.Font;$accountGrid.ColumnHeadersDefaultCellStyle.Font=$form.Font
+        foreach($row in $accountGrid.Rows){if($row.Tag -and $row.Tag.active){$row.Cells[0].Style.Font=$script:ActiveAccountFont}}
+    }
     $w=$form.ClientSize.Width/$scale;$h=$form.ClientSize.Height/$scale
     Set-LayoutBounds $header 0 0 $w 86
     Set-LayoutBounds $statusLabel ($w-204) 18 176 29
@@ -122,15 +140,18 @@ function Resize-DashboardLayout {
     Set-LayoutBounds $currentLabel 20 38 ($sw-438) 31
     Set-LayoutBounds $runDetail 20 73 ($sw-438) 22
     Set-LayoutBounds $fiveCaption ($sw-388) 14 154 23
-    Set-LayoutBounds $fiveValue ($sw-388) 37 154 38
+    Set-LayoutBounds $fiveValue ($sw-388) 37 154 46
     Set-LayoutBounds $fiveTrack ($sw-388) 84 154 5
     Set-LayoutBounds $weekCaption ($sw-194) 14 170 23
-    Set-LayoutBounds $weekValue ($sw-194) 37 170 38
+    Set-LayoutBounds $weekValue ($sw-194) 37 170 46
     Set-LayoutBounds $weekTrack ($sw-194) 84 170 5
     Set-LayoutBounds $startButton 12 128 124 36
     Set-LayoutBounds $pauseButton 148 128 104 36
     Set-LayoutBounds $stopButton 264 128 104 36
     Set-LayoutBounds $reservePanel 392 128 250 36
+    Set-LayoutBounds $reserveToggle 10 7 100 23
+    Set-LayoutBounds $reserveNumber 116 6 56 25
+    Set-LayoutBounds $reserveTotalLabel 181 8 65 22
     Set-LayoutBounds $reserveHint 658 135 ($pw-670) 24
     Set-LayoutBounds $pauseReason 12 175 ($pw-190) 28
     Set-LayoutBounds $reportButton ($pw-162) 167 150 34
@@ -150,6 +171,7 @@ function Resize-DashboardLayout {
     Set-LayoutBounds $followSchedule ($spw-276) 443 112 25
     Set-LayoutBounds $scheduleLog 20 482 ($spw-40) ([Math]::Max(80,$sph-496))
     Update-QuotaMeters
+    }finally{$script:dashboardLayoutBusy=$false}
 }
 function Update-QuotaMeters {
     foreach($entry in @(@($fiveValue,$fiveTrack,$fiveFill),@($weekValue,$weekTrack,$weekFill))){
@@ -161,5 +183,47 @@ function Update-QuotaMeters {
         $entry[2].BackColor=$tone;$entry[0].ForeColor=$tone
     }
 }
+# Capture the original sizes and fonts before any window is shown.
+. (Join-Path $Here 'lib\dashboard-dpi.ps1')
+$script:ActiveAccountFont.Dispose()
+Initialize-DashboardDpiModel
+$form.ResumeLayout($true)
+$script:dashboardDpiChanging=$false
+$script:dashboardLogicalSize=New-Object Drawing.SizeF(1120,900)
+function Save-DashboardWindowSize {
+    if(-not $script:dashboardDpiChanging -and $form.WindowState -eq 'Normal'){$script:dashboardLogicalSize=New-Object Drawing.SizeF(($form.ClientSize.Width*96.0/$form.DeviceDpi),($form.ClientSize.Height*96.0/$form.DeviceDpi))}
+}
 $form.Add_Resize({Resize-DashboardLayout})
+$form.Add_Load({
+    $scale=$form.DeviceDpi/96.0
+    $form.ClientSize=New-Object Drawing.Size([int]($script:dashboardLogicalSize.Width*$scale),[int]($script:dashboardLogicalSize.Height*$scale))
+    $script:dashboardAppliedDpi=0
+    Resize-DashboardLayout
+})
+# Remember deliberate resizes, rather than transient frame sizes generated
+# while Windows and WinForms negotiate a DPI change.
+$form.Add_ResizeEnd({Save-DashboardWindowSize;Write-DashboardWindowStatus})
+$form.Add_DpiChanged({
+    param($sender,$eventArgs)
+    # Framework WinForms can retain the old physical minimum size and clamp the
+    # suggested smaller window, making every round trip enlarge it again.
+    $alreadyChanging=$script:dashboardDpiChanging
+    $script:dashboardDpiChanging=$true
+    $factor=$eventArgs.DeviceDpiNew/96.0
+    $form.MinimumSize=New-Object Drawing.Size([int](1056*$factor),[int](819*$factor))
+    if($alreadyChanging){return}
+    [void]$form.BeginInvoke([Action]{
+        try{
+            if($form.IsDisposed){return}
+            $script:dashboardAppliedDpi=0
+            if($form.WindowState -eq 'Normal'){
+                $factor=$form.DeviceDpi/96.0
+                $form.ClientSize=New-Object Drawing.Size([int]($script:dashboardLogicalSize.Width*$factor),[int]($script:dashboardLogicalSize.Height*$factor))
+            }
+            Resize-DashboardLayout
+            Reset-DashboardLogDpi $eventsBox;Reset-DashboardLogDpi $scheduleLog
+            Write-DashboardWindowStatus
+        }finally{$script:dashboardDpiChanging=$false}
+    })
+})
 $tabs.Add_SelectedIndexChanged({Resize-DashboardLayout})

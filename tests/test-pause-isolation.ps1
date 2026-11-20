@@ -57,7 +57,7 @@ try{
     Set-Turn 'auth-thread' -ErrorText $auth -DesktopStatus 'active'
     Check 'active work remains protected even with an old auth error' ((Get-TurnView 'auth-thread').Outcome -eq 'running')
     Set-Turn 'auth-thread' -ErrorText $auth -User 'pause this task'
-    Check 'explicit user pause remains protected' ((Get-TurnView 'auth-thread').Outcome -eq 'waiting')
+    Check 'prompt pause wording does not change structured authorization classification' ((Get-TurnView 'auth-thread').Outcome -eq 'blocked')
     Set-Turn 'auth-thread' -Status 'completed' -User 'Explain unauthorized 401' -Final 'The request returned 401'
     Check 'error words in ordinary text do not block completed work' ((Get-TurnView 'auth-thread').Outcome -eq 'finished')
     Set-Turn 'auth-thread' -ErrorText $auth -Status 'interrupted'
@@ -84,7 +84,13 @@ try{
 
     # Retry exhaustion remains scoped and cannot stop another eligible chat.
     $script:views=@{};Set-Turn 'capped-thread' -ErrorText 'stream_disconnected';Set-Turn 'next-thread' -Status 'inProgress' -DesktopStatus 'notLoaded'
-    $s=New-State;1..4|ForEach-Object{Set-StateFlag $s.handled ('desktop:capped-thread:old-'+$_) 'preserved'}
+    $s=New-State
+    1..4|ForEach-Object{
+        $source='old-'+($_-1);$target=if($_ -eq 4){'turn-1'}else{'old-'+$_}
+        $key='desktop:capped-thread:'+$source
+        Set-StateFlag $s.handled $key 'preserved'
+        Set-StateFlag $s.deliveries $key ([pscustomobject]@{threadId='capped-thread';sourceTurnId=$source;observedTurnId=$target;phase='failed'})
+    }
     $sent=$script:sends.Count;Invoke-WatchRound $s
     Check 'network retry cap prevents only that chat from resuming' ($script:pauses -eq 0 -and $script:sends.Count -eq $sent+1 -and $script:sends[-1] -eq 'next-thread')
 
@@ -129,6 +135,7 @@ try{
         if($script:mode -eq 'no-active'){throw 'Codex Switch 没有唯一当前账号'}
         if($script:mode -eq 'quota'){throw '当前账号额度数据未知'}
         if($script:mode -eq 'identity'){throw 'Codex Switch 账号身份数据不完整，等待重新读取'}
+        if($script:mode -eq 'host-unavailable'){throw 'Could not determine whether Codex thread 01a1b052-93c7-7443-8a98-4813ea8d8d56 exists. Unavailable or failed hosts: local'}
         if($script:mode -eq 'alternating'){
             if($script:rounds % 2 -eq 0){throw 'connection refused'}
             throw 'Codex Switch 账号身份数据不完整，等待重新读取'
@@ -138,6 +145,9 @@ try{
     $paused=$script:pauses;Start-WatchLoop (New-State) -MaxRounds 12
     $script:mode='quota';Start-WatchLoop (New-State) -MaxRounds 12
     Check 'long active-account and quota read outages do not latch a pause' ($script:pauses -eq $paused)
+    $script:mode='host-unavailable';$script:rounds=0;Start-WatchLoop (New-State) -MaxRounds 12
+    Check 'real afternoon host discovery failure keeps retrying without latching global pause' ($script:pauses -eq $paused -and $script:rounds -eq 12)
+    Check 'confirmed missing thread is not treated as transient host discovery' ((Get-RecoveryPolicy 'Codex thread not found') -eq 'unknown')
     $script:mode='healthy';$script:rounds=0;Start-WatchLoop (New-State) -MaxRounds 2
     Check 'data recovery needs no manual resume' ($script:rounds -eq 2 -and $script:pauses -eq $paused)
     $script:mode='alternating';$script:rounds=0;Start-WatchLoop (New-State) -MaxRounds 12

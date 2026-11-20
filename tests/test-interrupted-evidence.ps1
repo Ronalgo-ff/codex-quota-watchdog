@@ -12,15 +12,15 @@ function Write-Event {param($Message,$Level)}
 function Write-File {param($Message,$Level)}
 function Request-ManualPause {throw 'Unexpected pause'}
 function Get-RecentSessions {return $script:files}
-function Record($Type,$Payload){
+function Record($Type,$Payload,$At='2026-10-07T20:30:41.385Z'){
     $p=[ordered]@{};if($Payload.ContainsKey('type')){$p.type=$Payload.type}
     foreach($key in $Payload.Keys){if($key -ne 'type'){$p[$key]=$Payload[$key]}}
-    return [ordered]@{timestamp='2026-10-07T20:30:41.385Z';type=$Type;payload=$p}|ConvertTo-Json -Depth 15 -Compress
+    return [ordered]@{timestamp=$At;type=$Type;payload=$p}|ConvertTo-Json -Depth 15 -Compress
 }
-function Rollout($Id,$End='',$Turn='source-1'){
-    $path=Join-Path $tmp ('rollout-'+$Id+'.jsonl')
-    $lines=@((Record 'session_meta' @{id=$Id;source='vscode';originator='Codex Desktop'}),(Record 'event_msg' @{type='task_started';turn_id=$Turn}))
-    if($End){$lines+=Record 'event_msg' @{type=$End;turn_id=$Turn}}
+function Rollout($Id,$End='',$Turn='source-1',$Suffix='',$At='2026-10-07T20:30:41.385Z'){
+    $path=Join-Path $tmp ('rollout-'+$Id+$Suffix+'.jsonl')
+    $lines=@((Record 'session_meta' @{id=$Id;source='vscode';originator='Codex Desktop'} $At),(Record 'event_msg' @{type='task_started';turn_id=$Turn} $At))
+    if($End){$lines+=Record 'event_msg' @{type=$End;turn_id=$Turn} $At}
     [IO.File]::WriteAllText($path,($lines -join "`n")+"`n",(New-Object Text.UTF8Encoding($false)))
     $script:files=@(Get-ChildItem $tmp -Filter *.jsonl)
     return $path
@@ -61,7 +61,7 @@ try{
     Check 'approval wait protected even with open marker' ((Get-TurnView $id).Outcome -eq 'waiting')
     Desktop $id
     $script:data[$id].turns[0].items=@(@{type='userMessage';content=@(@{type='text';text='先等我确认，不要继续'})})
-    Check 'explicit user wait protected' ((Get-TurnView $id).Outcome -eq 'waiting')
+    Check 'prompt wait wording cannot veto proven open-turn recovery' ((Get-TurnView $id).Outcome -eq 'interrupted')
     Desktop $id 'aborted'
     Check 'explicit desktop aborted status protected' ((Get-TurnView $id).Outcome -eq 'waiting')
     Desktop $id 'interrupted' 'unknown error'
@@ -69,6 +69,24 @@ try{
     Desktop $id
     $script:files=@()
     Check 'missing rollout cannot grant recovery' ((Get-TurnView $id).Outcome -eq 'waiting')
+    $old=Rollout $id 'turn_aborted' 'old-turn'
+    $segment=Rollout $id '' 'source-1' '_new-segment' '2026-10-07T21:30:41.385Z'
+    Check 'latest suffixed segment recovers the exact open turn despite old original stop' ((Get-TurnView $id).Outcome -eq 'interrupted')
+    $script:files=@(Get-Item -LiteralPath $segment)
+    Check 'suffixed segment works when stale original has left the lookback window' ((Get-TurnView $id).Outcome -eq 'interrupted')
+    $null=Rollout $id 'turn_aborted' 'source-1' '_new-segment' '2026-10-07T21:30:42.385Z'
+    Check 'Stop in the latest segment still prevents continuation' ((Get-TurnView $id).Outcome -eq 'waiting')
+    $null=Rollout $id '' 'different-turn' '_new-segment' '2026-10-07T21:30:43.385Z'
+    Check 'latest segment for another turn cannot fall back to an older open marker' ((Get-TurnView $id).Outcome -eq 'waiting')
+    $null=Rollout $id '' 'source-1' '_new-segment' '2026-10-07T21:30:44.385Z'
+    $foreign=Join-Path $tmp ('rollout-'+$id+'_foreign.jsonl')
+    $lines=@((Record 'session_meta' @{id='another-thread';source='vscode';originator='Codex Desktop'} '2026-10-07T22:30:44.385Z'),(Record 'event_msg' @{type='turn_aborted';turn_id='source-1'} '2026-10-07T22:30:44.385Z'))
+    [IO.File]::WriteAllText($foreign,($lines -join "`n")+"`n",(New-Object Text.UTF8Encoding($false)))
+    $script:files=@(Get-ChildItem $tmp -Filter *.jsonl)
+    Check 'filename match with foreign metadata never overrides the actual thread' ((Get-TurnView $id).Outcome -eq 'interrupted')
+    $tie=Rollout $id '' 'source-1' '_ambiguous' '2026-10-07T21:30:44.385Z'
+    Check 'equally recent segments require unambiguous evidence' ((Get-TurnView $id).Outcome -eq 'waiting')
+    Remove-Item -LiteralPath $segment,$foreign,$tie
     $null=Rollout $id
     $id2='22222222-2222-2222-2222-222222222222';$null=Rollout $id2 'task_complete';Desktop $id2 'failed' 'usage_limit_exceeded'
     $id3='33333333-3333-3333-3333-333333333333';$null=Rollout $id3 'turn_aborted';Desktop $id3

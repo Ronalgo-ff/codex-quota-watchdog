@@ -1,7 +1,7 @@
 ﻿# Persistent scheduler. Account handling, desktop turns and diagnostics have independent lifecycles.
 function Initialize-V2State {
     param($State)
-    foreach ($name in @('deliveries','switchIncidents','creditRecoveries')) {
+    foreach ($name in @('deliveries','switchIncidents','creditRecoveries','recoveryWatch','resumeObservations')) {
         if (-not (Get-StateFlag $State $name)) { Set-StateFlag $State $name ([pscustomobject]@{}) }
     }
 }
@@ -14,6 +14,9 @@ function Write-Transition {
 
 function Get-RecoveryPolicy {
     param([string]$Message)
+    # A read_thread discovery error explicitly naming the unavailable local
+    # host is a read outage, not proof that the conversation was deleted.
+    if($Message -match '^Could not determine whether Codex thread [0-9a-f-]{36} exists\. Unavailable or failed hosts: local\.?$'){return 'wait-service'}
     # Known service outages can recover without operator intervention.
     if($Message -match '(?i)桌面通道不可用|桌面本地会话状态暂不可用|Desktop pipe|无法连接到远程服务器|无法解析此远程名称|连接超时|连接被拒绝|connection refused|connection reset|name resolution|network is unreachable|timed? out|timeout|超时|\b(408|429|502|503|504)\b|Codex Switch 未返回账号'){
         return 'wait-service'
@@ -80,9 +83,26 @@ function Get-RolloutInterruptionEvidence {
     # Desktop can synthesize interrupted/error=null for a lost app-server turn.
     # A real Stop has a turn_aborted record. Require positive evidence of the
     # exact still-open turn; missing files/markers never grant permission.
-    $files=@(Get-RecentSessions | Where-Object {$_.BaseName.EndsWith('-'+$ThreadId)})
-    if($files.Count -ne 1){return 'unverified'}
-    $file=$files[0];$file.Refresh()
+    # A desktop continuation can create <threadId>_<segmentId>.jsonl while the
+    # original file stops changing. Confirm the header identity, then use the
+    # newest segment's event timestamp rather than the original filename.
+    $pattern='-'+[regex]::Escape($ThreadId)+'(?:_[^\\]+)?$'
+    $candidates=@()
+    foreach($candidate in @(Get-RecentSessions | Where-Object {$_.BaseName -match $pattern})){
+        $header=$null
+        try{
+            $header=New-Object IO.StreamReader([IO.File]::Open($candidate.FullName,'Open','Read','ReadWrite'))
+            $meta=$header.ReadLine()|ConvertFrom-Json
+            if($meta.type -eq 'session_meta' -and $meta.payload.id -eq $ThreadId -and
+                $meta.payload.source -eq 'vscode' -and $meta.payload.originator -eq 'Codex Desktop'){
+                $candidates+=[pscustomobject]@{file=$candidate;at=(Get-SessionFileStamp $candidate)}
+            }
+        }catch{}finally{if($header){$header.Dispose()}}
+    }
+    if($candidates.Count -eq 0){return 'unverified'}
+    $latest=@($candidates|Sort-Object at -Descending)
+    if(@($latest|Where-Object {$_.at -eq $latest[0].at}).Count -ne 1){return 'unverified'}
+    $file=$latest[0].file;$file.Refresh()
     if(-not (Get-Variable InterruptionEvidenceCache -Scope Script -ErrorAction SilentlyContinue)){$script:InterruptionEvidenceCache=@{}}
     $stamp=$TurnId+':'+$file.Length+':'+$file.LastWriteTimeUtc.Ticks
     $cached=$script:InterruptionEvidenceCache[$file.FullName]
@@ -134,9 +154,8 @@ function Get-TurnView {
     $flags=@(Get-StateFlag $data.thread.status 'activeFlags') -join ','
     if ($flags -match 'waiting|approval|input' -or $status -match 'waiting|approval') { $view.Outcome='waiting'; return $view }
     if ($status -in @('active','running','inProgress')) { $view.Outcome='running'; return $view }
-    if ($view.User -match '(?i)(不要|不必|不用|停止|暂停).{0,12}(继续|执行|运行|工作|任务)|先等我|等我(确认|回复)|\b(stop|pause)\b') {
-        $view.Outcome='waiting'; return $view
-    }
+    # Watching is the opt-in for abnormal-turn recovery. Prompt wording never
+    # vetoes a structured failure; actual running/approval/stop state still wins.
     if ($t.status -in @('failed','interrupted','aborted') -and (Test-AuthorizationTurnError $view.Error)) {
         $view.Outcome='blocked';$view.Reason='authorization-required';return $view
     }
@@ -192,6 +211,7 @@ $script:DesktopListingCache=@()
 $script:DesktopListingRetryAt=[datetime]::MinValue
 $script:DesktopHealth=[pscustomobject]@{mode='starting';at=(Get-Date).ToString('o');error=$null}
 function Get-DesktopSnapshot {
+    param($State=$null)
     $fallback=(Get-Date) -lt $script:DesktopListingRetryAt
     $listed=@($script:DesktopListingCache)
     if(-not $fallback){
@@ -212,7 +232,25 @@ function Get-DesktopSnapshot {
     $recent=@();$active=@();$views=@{}
     try{
         foreach($t in @($threads|Select-Object -First 5)){
-            $v=Get-TurnView $t.id;$views[$t.id]=$v;$recent+=$v
+            $v=Get-TurnView $t.id;Set-StateFlag $v 'SelectedBy' 'recent';$views[$t.id]=$v;$recent+=$v
+        }
+        # Five is a discovery window, not a reason to forget work already seen
+        # running. Persisted identities survive sidebar churn and watcher restarts;
+        # only fresh read_thread evidence can make them continuation candidates.
+        $watch=Get-StateFlag $State 'recoveryWatch'
+        if($watch){
+            foreach($entry in @($watch.PSObject.Properties)){
+                if(-not $views.ContainsKey($entry.Name)){
+                    $v=Get-TurnView $entry.Name;Set-StateFlag $v 'SelectedBy' 'tracked';$views[$entry.Name]=$v;$recent+=$v
+                }
+            }
+        }
+        # Running desktop work is in scope even if the watcher was started
+        # after it left the recent five. Completed historical chats stay out.
+        foreach($t in @($listed|Where-Object {$_.status -in @('active','running','inProgress')})){
+            if(-not $views.ContainsKey($t.id)){
+                $v=Get-TurnView $t.id;Set-StateFlag $v 'SelectedBy' 'active';$views[$t.id]=$v;$recent+=$v
+            }
         }
         if($fallback){
             # Protect older active work too. Local metadata only discovers identity;
@@ -220,18 +258,23 @@ function Get-DesktopSnapshot {
             $cachedSafety=if($local.Count -eq 0){@($listed)}else{@($listed|Where-Object {$_.status -in @('active','running','inProgress')})}
             $verify=@(@($local)+$cachedSafety|Group-Object id|ForEach-Object {$_.Group[0]})
             foreach($t in $verify){if(-not $views.ContainsKey($t.id)){$views[$t.id]=Get-TurnView $t.id}}
-            foreach($v in $views.Values){if($v.Status -in @('active','running','inProgress')){$active+=[pscustomobject]@{id=$v.Id;status=$v.Status}}}
+            foreach($v in $views.Values){
+                if($v.Status -in @('active','running','inProgress')){
+                    $active+=[pscustomobject]@{id=$v.Id;status=$v.Status}
+                    if($v.Id -notin @($recent|ForEach-Object {$_.Id})){Set-StateFlag $v 'SelectedBy' 'active';$recent+=$v}
+                }
+            }
             if($local.Count -eq 0){
                 # Cached identities remain useful for safety checks after 12 idle hours,
                 # but their old completed turns must not become continuation candidates.
                 $cutoff=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-[int]$Script:Config.ResumeLookbackMin*60
-                $recent=@($recent|Where-Object {[double](Get-StateFlag $_ 'At') -ge $cutoff})
+                $recent=@($recent|Where-Object {(Get-StateFlag $_ 'SelectedBy') -eq 'tracked' -or [double](Get-StateFlag $_ 'At') -ge $cutoff})
             }
             Write-Transition 'desktop-list-fallback' '会话列表暂不可用，已改用本地索引并逐条核实桌面状态；切号和续跑检查继续（后续通道状态见底部）' 'WARN'
             $script:DesktopHealth=[pscustomobject]@{mode='fallback';at=(Get-Date).ToString('o');error=$null}
         }else{
             $active=@($listed|Where-Object {$_.status -in @('active','running','inProgress')})
-            foreach($v in $recent){if($v.Outcome -in @('running','waiting') -and $v.Status -in @('active','running','inProgress') -and $v.Id -notin @($active|ForEach-Object {$_.id})){$active+=[pscustomobject]@{id=$v.Id;status=$v.Status}}}
+            foreach($v in $recent){if($v.Status -in @('active','running','inProgress') -and $v.Id -notin @($active|ForEach-Object {$_.id})){$active+=[pscustomobject]@{id=$v.Id;status=$v.Status}}}
             # Healthy/fallback route changes are reflected in the footer, not repeated events.
             $script:DesktopHealth=[pscustomobject]@{mode='ok';at=(Get-Date).ToString('o');error=$null}
         }
@@ -240,6 +283,42 @@ function Get-DesktopSnapshot {
         throw
     }
     return [pscustomobject]@{Recent=$recent;Active=$active;Views=$views}
+}
+
+function Write-ResumeAudit {
+    param($Entry)
+    $leaf=if($Live){'resume-history.jsonl'}else{'resume-history.dry-run.jsonl'}
+    $path=Join-Path $Script:Config.StateDir $leaf
+    if((Test-Path -LiteralPath $path) -and (Get-Item -LiteralPath $path).Length -ge 2MB){
+        Move-Item -LiteralPath $path -Destination ($path+'.1') -Force
+    }
+    $line=($Entry|ConvertTo-Json -Depth 6 -Compress)+[Environment]::NewLine
+    [IO.File]::AppendAllText($path,$line,(New-Object Text.UTF8Encoding($false)))
+}
+
+function Save-DesktopRecoveryWatch {
+    param($State,$Recent)
+    $next=[pscustomobject]@{};$observed=[pscustomobject]@{};$changed=$false
+    foreach($v in $Recent){
+        $previous=Get-StateFlag $State.recoveryWatch $v.Id
+        if($v.Status -in @('active','running','inProgress') -or $v.Outcome -in @('interrupted','unfinished','limit','retryable')){
+            $entry=[pscustomobject]@{turnId=$v.TurnId;outcome=$v.Outcome;firstSeenAt=$(if($previous){$previous.firstSeenAt}else{(Get-Date).ToString('o')})}
+            Set-StateFlag $next $v.Id $entry
+            if(-not $previous -or $previous.turnId -ne $v.TurnId -or $previous.outcome -ne $v.Outcome){$changed=$true}
+        }elseif($previous){$changed=$true}
+        $signature=@($v.TurnId,$v.Status,$v.Outcome,(Get-StateFlag $v 'Reason'),$v.Error,(Get-StateFlag $v 'SelectedBy')) -join '|'
+        Set-StateFlag $observed $v.Id $signature
+        if((Get-StateFlag $State.resumeObservations $v.Id) -ne $signature){
+            Write-ResumeAudit @{at=(Get-Date).ToString('o');threadId=$v.Id;turnId=$v.TurnId;status=$v.Status;outcome=$v.Outcome;reason=(Get-StateFlag $v 'Reason');selectedBy=(Get-StateFlag $v 'SelectedBy');error=$v.Error}
+            $changed=$true
+        }
+    }
+    # Keep entries absent from an injected/partial snapshot until a fresh read
+    # verifies them; never drop an unfinished task on an incomplete list.
+    foreach($old in @($State.recoveryWatch.PSObject.Properties)){
+        if(-not $observed.PSObject.Properties[$old.Name]){Set-StateFlag $next $old.Name $old.Value}
+    }
+    if($changed){Set-StateFlag $State 'recoveryWatch' $next;Set-StateFlag $State 'resumeObservations' $observed;Save-State $State}
 }
 
 function Update-DesktopDeliveries {
@@ -300,6 +379,26 @@ function Test-LegacyIncidentHandled {
         if($View.Outcome -eq 'limit' -and $State.handled.PSObject.Properties[(Get-LimitFingerprint $fact)]){return $true}
     }
     return $false
+}
+
+function Get-ResumeChainCount {
+    param($State,$View)
+    # Count only verified automatic turns leading to this turn. Human turns
+    # start a new chain; historical receipts remain intact for deduplication.
+    $turn=$View.TurnId;$seen=@{};$count=0
+    while($turn){
+        if($seen.ContainsKey($turn)){return [int]$Script:Config.ResumeMaxRounds}
+        $seen[$turn]=$true
+        $parents=@($State.deliveries.PSObject.Properties|ForEach-Object {$_.Value}|Where-Object {
+            (Get-StateFlag $_ 'threadId') -eq $View.Id -and (Get-StateFlag $_ 'observedTurnId') -eq $turn -and
+            (Get-StateFlag $_ 'phase') -in @('started','completed','failed')
+        })
+        if($parents.Count -eq 0){break}
+        if($parents.Count -ne 1 -or -not (Get-StateFlag $parents[0] 'sourceTurnId')){return [int]$Script:Config.ResumeMaxRounds}
+        $count++;$turn=$parents[0].sourceTurnId
+        if($count -ge $Script:Config.ResumeMaxRounds){break}
+    }
+    return $count
 }
 
 function Get-ResumeAccountProof {
@@ -600,21 +699,34 @@ function Invoke-WatchRound {
         usableAccounts=@($accounts|Where-Object {Test-AccountQuotaAvailable $_}).Count
     }
     if($accounts.Count -eq 0){Write-Transition 'no-enabled-accounts' '本次没有可参与看护的账号，等待普通账号加入或停止后重新选择备选数量';return}
-    $cycle=Invoke-ResetCycle $State $accounts
-    if($cycle -eq 'waiting'){return}
     $a=$active[0]
+    $manual=Test-ManualAccountSelection $State $a.Id
+    $wait=Get-StateFlag $State 'waitingReset'
+    if($manual -and (Test-AccountQuotaAvailable $a) -and (-not $wait -or $wait.phase -in @('waiting','success'))){
+        # A manual usable account ends a passive quota wait. Running/uncertain
+        # batches still require their original receipt reconciliation.
+        if($wait){Clear-StateFlag $State 'waitingReset';Save-State $State}
+        $cycle='none'
+    }else{$cycle=Invoke-ResetCycle $State $accounts}
+    if($cycle -eq 'waiting'){return}
+    if($manual -and $cycle -eq 'recovered' -and (Test-AccountQuotaAvailable $a)){
+        # A batch that finished after the manual choice may be reconciled, but
+        # its successful receipt does not grant permission to replace that choice.
+        Clear-StateFlag $State 'waitingReset';Save-State $State;$cycle='none'
+    }
     # An incomplete quota snapshot is not a zero balance.
     if($a.Id -in @($accounts.Id) -and -not (Test-AccountQuotaKnown $a)){throw '当前账号额度数据未知'}
     # Reconcile before reading the desktop, which may still be closed.
     $restartIntent=Get-StateFlag $State 'switchIntent'
     if($restartIntent -and $restartIntent.targetId -eq $a.Id){Set-CodexDesktopRecovery $State $restartIntent}
     if(-not(Test-CodexDesktopRecovery $State $a.Id)){return}
-    $snapshot=Get-DesktopSnapshot
+    $snapshot=Get-DesktopSnapshot $State
     if(Get-StateFlag $State 'desktopRestart'){
         Clear-StateFlag $State 'desktopRestart';Save-State $State
         Write-Event 'Codex 桌面已重新打开，聊天读取通道恢复正常' 'OK'
     }
     $recent=@($snapshot.Recent)
+    Save-DesktopRecoveryWatch $State $recent
     # Fresh recent-task reads come first; reuse them for pending deliveries.
     # Reconcile uncertain submissions before any account mutation or new send.
     Update-DesktopDeliveries $State -Views (Get-StateFlag $snapshot 'Views')
@@ -622,7 +734,7 @@ function Invoke-WatchRound {
     Write-JsonAtomic $observation @{
         at=(Get-Date).ToString('o');engine=2;activeAccount=$a.Id
         accounts=@($accounts|Select-Object Id,Active,FiveHour,Weekly,FiveHourLimitAbsent,FiveHourReset,WeeklyReset)
-        recent=@($recent|Select-Object Id,TurnId,Status,Outcome,Reason,At,Error)
+        recent=@($recent|Select-Object Id,TurnId,Status,Outcome,Reason,At,Error,SelectedBy)
     }
     foreach($v in @($recent|Where-Object {$_.Outcome -eq 'blocked'})){
         Write-ThreadIssue $State ('auth:'+ $v.Id+':'+$v.TurnId) "对话 $($v.Id) 的登录或工作区授权失败，请检查登录与权限后手动继续" @{thread=$v.Id;turn=$v.TurnId;error=$v.Error;reason=$v.Reason}
@@ -633,11 +745,18 @@ function Invoke-WatchRound {
     $hits=@($recent|Where-Object {$_.Outcome -eq 'limit'})
     $freshHits=@($hits|Where-Object {-not $State.switchIncidents.PSObject.Properties[($_.Id+':'+$_.TurnId)] -and
         -not (Test-LegacyIncidentHandled $State $_)})
+    if($manual -and (Test-AccountQuotaAvailable $a)){
+        # A previous account's failed turn must not undo a later manual switch.
+        $selectedAt=Get-StateFlag (Get-StateFlag $State 'accountSelection') 'sinceEpoch'
+        $freshHits=@($freshHits|Where-Object {$_.At -ge $selectedAt})
+    }
     $dry=$a.Id -notin @($accounts.Id) -or -not (Test-AccountQuotaAvailable $a)
     $mustSwitch=$dry -or $freshHits.Count -gt 0 -or $cycle -eq 'recovered'
     $intent=Get-StateFlag $State 'switchIntent'
     if($intent){
         if($intent.targetId -eq $a.Id){
+            Set-AccountSelection $State $a.Id 'automatic'
+            $manual=$false
             foreach($key in @($intent.incidents)){$State.switchIncidents|Add-Member -NotePropertyName $key -NotePropertyValue $a.Id -Force}
             Clear-StateFlag $State 'switchIntent';Save-State $State
             Set-StateFlag $State 'desktopReadyAfter' ((Get-Date).AddSeconds([int]$Script:Config.DesktopReadyDelaySec).ToString('o'));Save-State $State
@@ -661,7 +780,7 @@ function Invoke-WatchRound {
     }else{$creditExcluded=@(Get-CreditRetryExclusions $State $recent $unresolvedHits $accounts $a)}
     # Do not bounce out of the reserve into ordinary accounts already proven to
     # fail in this recovery chain; a real quota increase/reset releases them.
-    $preferOrdinary=(Get-AccountPriority $a $Script:Config.FallbackAccountIds) -gt 0 -and
+    $preferOrdinary=-not $manual -and (Get-AccountPriority $a $Script:Config.FallbackAccountIds) -gt 0 -and
         @($accounts|Where-Object {-not $_.Active -and $_.Switchable -and $_.Id -notin $creditExcluded -and (Test-AccountQuotaAvailable $_) -and (Get-AccountPriority $_ $Script:Config.FallbackAccountIds) -eq 0}).Count -gt 0
     $mustSwitch=$mustSwitch -or $preferOrdinary
     if($mustSwitch){
@@ -693,11 +812,20 @@ function Invoke-WatchRound {
         if(-not $best -and $mustSwitch){Write-Transition 'no-switchable' '额度不足，暂时没有可切账号；继续等待';return}
         if($best){
             if(-not $Live){Write-Transition 'dry-switch' "[演习] 会切换到 $($best.Email)，周剩余 $($best.Weekly)%" 'DRYRUN';return}
+            # A user can switch accounts while desktop reads are in flight.
+            # Recheck immediately before dispatch instead of replacing that choice.
+            $confirmed=@(Get-Accounts)
+            $confirmedActive=@($confirmed|Where-Object {$_.Active})
+            if(-not (Test-AccountIdentities $confirmed) -or $confirmedActive.Count -ne 1 -or $confirmedActive[0].Id -ne $a.Id){
+                Write-Transition 'switch-account-changed' '切号前当前账号已变化或暂不可核实，取消本轮自动切号并重新读取' 'INFO'
+                return
+            }
             $intent=[pscustomobject]@{id=[guid]::NewGuid().ToString('N');sourceId=$a.Id;targetId=$best.Id;at=(Get-Date).ToString('o');incidents=@($freshHits|ForEach-Object {$_.Id+':'+$_.TurnId})}
             $desktopLaunch=Get-CodexDesktopLaunch
             if($desktopLaunch){Set-StateFlag $intent 'desktopLaunch' $desktopLaunch}
             Set-StateFlag $State 'switchIntent' $intent;Save-State $State
             if(-not (Invoke-SwitchAccount $best)){Request-ManualPause $State ('switch:'+ $intent.id) '切号结果未确认，已暂停' $intent;return}
+            Set-AccountSelection $State $best.Id 'automatic'
             Set-CodexDesktopRecovery $State $intent
             foreach($key in $intent.incidents){$State.switchIncidents|Add-Member -NotePropertyName $key -NotePropertyValue $best.Id -Force}
             Clear-StateFlag $State 'switchIntent';Save-State $State
@@ -722,9 +850,9 @@ function Invoke-WatchRound {
         if($v.Outcome -eq 'unknown') {Request-ManualPause $State ('turn:'+ $v.Id+':'+$v.TurnId) '会话异常，需要诊断' @{thread=$v.Id;turn=$v.TurnId;error=$v.Error;engine='lib/engine-v2.ps1';activeAccount=$a.Id;accounts=@($accounts|Select-Object Id,Active,FiveHour,Weekly);switchIncident=(Get-StateFlag $State.switchIncidents ($v.Id+':'+$v.TurnId))};continue}
         if($v.Outcome -notin @('interrupted','unfinished','limit','retryable')){continue}
         if($v.Outcome -ne 'limit' -and ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-$v.At) -lt $Script:Config.ResumeQuietMin*60){continue}
-        $n=@($State.handled.PSObject.Properties|Where-Object {$_.Name -like ('desktop:'+$v.Id+':*') -or $_.Name -like ('res:'+$v.Id+':*')}).Count
+        $n=Get-ResumeChainCount $State $v
         if($v.Outcome -ne 'limit' -and $n -ge $Script:Config.ResumeMaxRounds){
-            Write-Transition ('cap:'+$v.Id) "对话 $($v.Id.Substring(0,8)) 已达到自动续跑上限，停止重复催促"
+            Write-Transition ('cap:'+$v.Id) "对话 $($v.Id.Substring(0,8)) 本轮连续自动续跑已达上限，停止重复催促；新用户回合会重新计数"
             if($v.Outcome -eq 'retryable'){Write-ThreadIssue $State ('retry-cap:'+ $v.Id+':'+$v.TurnId) "对话 $($v.Id) 的网络错误已达到自动续跑上限，请检查后手动继续" @{thread=$v.Id;turn=$v.TurnId;error=$v.Error;attempts=$n}}
             continue
         }

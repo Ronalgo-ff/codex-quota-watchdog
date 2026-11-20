@@ -90,6 +90,7 @@ try{
     function Send-DesktopContinue {param($State,$View)} # No real desktop messages.
     $script:raw=New-RawAccounts;foreach($a in $script:raw){$a.active=$a.id -eq 'a6'}
     $accounts=@(Get-Accounts);$s=New-State;$attempts=[pscustomobject]@{}
+    Set-AccountSelection $s 'a6' 'automatic' # This scenario tests an automatically selected reserve.
     foreach($a in $accounts[0..4]){Set-StateFlag $attempts $a.Id ([pscustomobject]@{turnId='old';fiveHour=$a.FiveHour;weekly=$a.Weekly;fiveHourReset=$a.FiveHourReset;weeklyReset=$a.WeeklyReset})}
     Set-StateFlag $s.creditRecoveries 'credit-thread' ([pscustomobject]@{id='chain';accounts=$attempts})
     Set-StateFlag $s.switchIncidents 'credit-thread:old' 'a6'

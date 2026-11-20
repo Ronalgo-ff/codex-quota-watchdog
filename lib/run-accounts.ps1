@@ -20,5 +20,30 @@ function Get-RunAccountPolicy {
 function Get-RunAccounts {
     param($State,$Accounts)
     $policy=Get-RunAccountPolicy $State $Accounts
-    return @($Accounts|Where-Object {Test-RunAccountEnabled $_ $policy})
+    $active=@($Accounts|Where-Object {$_.Active})
+    if($active.Count -eq 1){
+        $selection=Get-StateFlag $State 'accountSelection'
+        if(-not $selection -or (Get-StateFlag $selection 'accountId') -ne $active[0].Id){
+            $intent=Get-StateFlag $State 'switchIntent'
+            $mode=if($intent -and (Get-StateFlag $intent 'targetId') -eq $active[0].Id){'automatic'}else{'manual'}
+            # Existing ordinary accounts need no manual override at startup.
+            # A pre-existing reserve has no proven automatic owner after upgrade.
+            if(-not $selection -and (Get-AccountPriority $active[0] $Script:Config.FallbackAccountIds) -eq 0){$mode='automatic'}
+            Set-AccountSelection $State $active[0].Id $mode
+            if($mode -eq 'manual'){Write-Event '当前账号由手动选择接管；额度可用时保留，不按自动备选名单或普通账号优先规则切走' 'INFO'}
+        }
+    }
+    # The allowance restricts automatic choices, never a manually selected active
+    # account. It does not add that account to the fixed automatic reserve list.
+    return @($Accounts|Where-Object {(Test-RunAccountEnabled $_ $policy) -or ($_.Active -and (Test-ManualAccountSelection $State $_.Id))})
+}
+function Set-AccountSelection {
+    param($State,[string]$AccountId,[ValidateSet('manual','automatic')][string]$Mode)
+    Set-StateFlag $State 'accountSelection' ([pscustomobject]@{accountId=$AccountId;mode=$Mode;sinceEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()})
+    Save-State $State
+}
+function Test-ManualAccountSelection {
+    param($State,[string]$AccountId)
+    $selection=Get-StateFlag $State 'accountSelection'
+    return $selection -and (Get-StateFlag $selection 'accountId') -eq $AccountId -and (Get-StateFlag $selection 'mode') -eq 'manual'
 }

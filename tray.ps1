@@ -4,6 +4,8 @@ param([switch]$SmokeTest)
 
 $ErrorActionPreference = 'Stop'
 $Here = $PSScriptRoot
+. (Join-Path $Here 'lib\ui-domain.ps1')
+if(Test-QuotaUiDomainRequired){exit (Invoke-QuotaUiDomain $PSCommandPath $PSBoundParameters)}
 $WatcherFile = Join-Path $Here 'codex-autopilot.ps1'
 $MonitorFile = Join-Path $Here 'dashboard.ps1'
 $LogDir = Join-Path $Here 'logs'
@@ -40,7 +42,12 @@ try {
         throw '托盘需要 STA；请从 start-tray.vbs 启动'
     }
     Add-Type -AssemblyName System.Windows.Forms
+    if([Windows.Forms.Application].GetMethod('SetHighDpiMode')){[void][Windows.Forms.Application]::SetHighDpiMode([Enum]::Parse([Windows.Forms.Application].Assembly.GetType('System.Windows.Forms.HighDpiMode'),'PerMonitorV2'))}
+    Add-Type -Path (Join-Path $Here 'lib\ui-dpi.cs')
+    [QuotaUiDpi]::Initialize()
     Add-Type -AssemblyName System.Drawing
+    [Windows.Forms.Application]::EnableVisualStyles()
+    [Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;

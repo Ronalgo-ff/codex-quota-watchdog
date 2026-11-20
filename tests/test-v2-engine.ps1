@@ -60,7 +60,7 @@ try{
         Check ('credit wall classified: '+$message) ((Get-TurnView 'thread-1234').Outcome -eq 'limit')
     }
     Turn -Status 'failed' -ErrorText 'Your workspace is out of credits' -User '暂停任务，不要继续'
-    Check 'explicit user pause wins over credit failure' ((Get-TurnView 'thread-1234').Outcome -eq 'waiting')
+    Check 'prompt pause wording cannot veto a structured credit failure' ((Get-TurnView 'thread-1234').Outcome -eq 'limit')
     Turn -Final '诊断报告：Your workspace is out of credits'
     Check 'credits in completed output do not trigger account actions' ((Get-TurnView 'thread-1234').Outcome -eq 'finished')
     Check 'closed desktop does not need manual pause' ((Get-RecoveryPolicy 'Codex 桌面通道不可用；保持看护，等待桌面恢复') -eq 'wait-service')

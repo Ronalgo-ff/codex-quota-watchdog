@@ -21,7 +21,7 @@ try{
     function Get-TurnView {param($ThreadId) $script:reads+=$ThreadId;[pscustomobject]@{Id=$ThreadId;Outcome=if($ThreadId -eq 'thread-1'){'running'}else{'finished'};Status=if($ThreadId -eq 'thread-1'){'active'}else{'idle'}}}
     $r=Get-DesktopSnapshot
     Check 'stale desktop index supplemented by real local desktop metadata' ($r.Recent[0].Id -eq 'thread-1')
-    Check 'only most recent five are inspected' ($script:reads.Count -eq 5 -and $script:reads -notcontains 'thread-6')
+    Check 'recent five and older listed active work are inspected without duplicates' ($script:reads.Count -eq 6 -and $script:reads -contains 'thread-6')
     Check 'subagent metadata is excluded' ($script:reads -notcontains 'thread-7')
     Check 'running thread omitted from sidebar is still protected' (@($r.Active|Where-Object {$_.id -eq 'thread-1'}).Count -eq 1)
     Check 'older running sidebar thread is also protected' (@($r.Active|Where-Object {$_.id -eq 'thread-6'}).Count -eq 1)
@@ -30,7 +30,7 @@ try{
     function Invoke-DesktopTool {param($Tool,$Arguments) $script:listCalls++;throw 'Desktop pipe response timeout; delivery may be uncertain'}
     function Get-TurnView {param($ThreadId) $script:reads+=$ThreadId;[pscustomobject]@{Id=$ThreadId;Outcome=if($ThreadId -eq 'thread-6'){'running'}else{'finished'};Status=if($ThreadId -eq 'thread-6'){'active'}else{'idle'}}}
     $script:reads=@();$r=Get-DesktopSnapshot
-    Check 'list timeout falls back to genuine local recent five' ($r.Recent.Count -eq 5 -and $r.Recent[0].Id -eq 'thread-1' -and $script:DesktopHealth.mode -eq 'fallback')
+    Check 'list timeout retains local recent five plus verified running work' ($r.Recent.Count -eq 6 -and $r.Recent[0].Id -eq 'thread-1' -and $script:DesktopHealth.mode -eq 'fallback')
     Check 'fallback verifies older running thread and protects it' ($script:reads -contains 'thread-6' -and @($r.Active|Where-Object {$_.id -eq 'thread-6'}).Count -eq 1)
     Get-DesktopSnapshot|Out-Null
     Check 'broken list is not requested on every poll' ($script:listCalls -eq 1)
