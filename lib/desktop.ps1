@@ -89,9 +89,11 @@ function Invoke-DesktopTool {
             namespace='codex_app'; threadId=$caller; tool=$Tool; turnId=('autopilot-'+[guid]::NewGuid().ToString('N'))
         } $timeout
     }catch{
-        # A catalog can answer while its task transport is stale. Rotate on the
-        # next operation; never replay this call, especially an uncertain send.
-        if($_.Exception.Message -match '(?i)Desktop pipe|timeout|timed out|closed|connection|Invalid desktop frame|response id mismatch'){
+        # A listing response can be slow while individual reads still work.
+        # The snapshot backs off the listing and verifies each thread separately.
+        $listingTimeout=$Tool -eq 'list_threads' -and $_.Exception.Message -eq 'Desktop pipe response timeout; delivery may be uncertain'
+        # Rotate stale transports on the next operation without replaying this call.
+        if(-not $listingTimeout -and $_.Exception.Message -match '(?i)Desktop pipe|timeout|timed out|closed|connection|Invalid desktop frame|response id mismatch'){
             $script:DesktopPipeCooldown[$path]=(Get-Date).AddSeconds(30)
             $script:DesktopPipe=$null
         }

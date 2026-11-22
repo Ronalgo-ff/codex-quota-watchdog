@@ -223,6 +223,7 @@ function Get-DesktopSnapshot {
         }catch{
             $fallback=$true;$script:DesktopListingRetryAt=(Get-Date).AddSeconds(60)
             $script:DesktopHealth=[pscustomobject]@{mode='degraded';at=(Get-Date).ToString('o');error=$_.Exception.Message}
+            Write-File ('读取桌面会话列表失败：'+$_.Exception.Message) 'WARN'
         }
     }
     $local=@(Get-LocalDesktopThreads)
